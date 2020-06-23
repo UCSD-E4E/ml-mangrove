@@ -1,0 +1,39 @@
+# 95%m, 97%nm site 7 recall with sparse categorical cross-entropy and 10 epochs
+# 76%m, 98%nm site 8 recall w/ 256 neurons, up to ~82%m recall w/ 0.1 dropout
+# presence of water as a separate class improves m recall by 1-2% on average
+# goes to 83%m recall on site 8 w/ 2 dense layer-dropout pairs
+# Training on site 8 is >95% for 7 and 9, but bad for the training set even w/o water
+# Training on sites 4 and 8, with water from site 4, gives consistent ~94% accuracy
+
+# When I mix all of the data together and then train on half, we get ~98% for everthing when testing
+# on the other half (with water). The variance of each metric is also an order of magnitude smaller.
+# Water does not seem to affect the accuracy significantly, but I should test this rigourously.
+# It doesn't make a difference if multiple scalings are present, which is a bit worrying.
+# Also doesn't matter if unlabeled data is mixed in as mangrove. It was site 10, which is unique, so it 
+# may have only affected the site 10 classifications.
+
+# 310 neurons, 2 dropouts at 0.3:
+# train on site7-11 gets 88-95% accuracy on site 1, which is below the Inceptionv3 95%
+# train on dataset/train gets up to 93% accuracy on output
+
+# 1024 neurons, 2 dropouts at 0.5:
+# ~93%acc on site 1 when trained on site 7-11 with VGG16 and Inceptionv3
+
+# 512-256-0.5 dropout gives 96% acc on site 1, 98.5% acc on PSC site 3-4, and ~92% acc on PSC site 9
+# Consistent ~87% accuracy on PSC sites 5-7 at 128px, independent of whether LP site 1 is in training set
+# Mixing 128 and 256 px tiles is a bad idea.
+
+# When training on a subset of LP 7-11 @ 128px, we get 96.9% on PSC 5-7 (after removing blurred tiles) and 97%
+# on PSC 3-4, about half of which is due to blur. It's lower when you remove black tiles though.
+# 96-98% on PSC 3-4 polygon labeled set
+# Adding the polygon labeled PSC 3-4 helps a lot on other PSC sites; will stay in
+
+# Only got 91% on PSC 9, but when we train on that and test on PSC 3-4, we get 99%. I think PSC 9 goes better in
+# training b/c it's less similar to LP.
+
+# The low f1 scores for mangrove on LP are a bit concerning, but I think it's actually related to the threshhold
+# parameter in the slicer. It was 95 for PSC, but I turned it down to 55 for LP to get more tiles.
+
+# Removing the hand-labeled tiles and training on lap4, lap4, psc3-4_l, and psc9_l (all polygon labeled) doesn't
+# affect accuracy on the other polygon_labeled sites, but noticeably helps on unlabeled sites. On the other hand,
+# running the polygon-only model on site7-11_11 gets 92% accuracy.
