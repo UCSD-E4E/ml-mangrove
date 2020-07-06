@@ -324,15 +324,15 @@ def test(backbone, weight_file):
     model_weights = weight_file
 
     # Listing GPU info
-    gpus = tf.config.experimental.list_physical_devices('GPU')
-    if gpus:
-        try:
-            for gpu in gpus:
-                tf.config.experimental.set_memory_growth(gpu, True)
-            logical_gpus = tf.config.experimental.list_logical_devices('GPU')
-            print(len(gpus), "Physical GPUs,", len(logical_gpus), "Logical GPUs")
-        except RuntimeError as e:
-            print(e)
+    #gpus = tf.config.experimental.list_physical_devices('GPU')
+    #if gpus:
+    #    try:
+     #       for gpu in gpus:
+      #          tf.config.experimental.set_memory_growth(gpu, True)
+       #     logical_gpus = tf.config.experimental.list_logical_devices('GPU')
+        #    print(len(gpus), "Physical GPUs,", len(logical_gpus), "Logical GPUs")
+       # except RuntimeError as e:
+        #    print(e)
 
     # Hyperparams
     BATCH_SIZE = 16
@@ -380,7 +380,9 @@ def test(backbone, weight_file):
             # Rasterio needs [bands, width, height]
             pred_mask = np.rollaxis(pred_mask, axis=2)
             dest.write(pred_mask)
-
+	#printing out metrics
+	#results = model.evaluate(img, pred_mask, batch_size=128)
+	#print("IOU: ", results) 
     print("Merging tiles (to create mask ortho)...")
     call = "gdal_merge.py -o " + testing_data + "ortho_mask.tif " + " " + out_dir + "/*"
     print(call)
@@ -484,7 +486,7 @@ def train_setup(raster_files, vector_files, out_width):
         # Generates raster masks
         print("Creating raster_masks...")
         raster_mask(raster_file, vector_file)
-        temp_dir = os.path.dirname(raster_file)
+        temp_dir = os.path.dirname(vector_file)
         mask_file = os.path.join(temp_dir, "masks", "mask_binary.tif")
 
         # Generates segmentation labels
@@ -494,7 +496,7 @@ def train_setup(raster_files, vector_files, out_width):
         map_files.append(map_file)
 
     # Creating dataset to train UNet
-    create_seg_dataset(map_files)
+    create_seg_dataset(map_files, "training", 0)
 
 def test_setup(raster_files, out_width):
     out_dir = "../dataset/testing/output"
