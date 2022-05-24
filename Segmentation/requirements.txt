@@ -8,6 +8,6 @@ joblib==0.14.1
 Keras==2.3.1
 Pillow==7.2.0
 rasterio==1.1.5
-tensorflow==2.2.1
+tensorflow==2.6.4
 
 # additionally, install libgdal-dev and install python-gdal
