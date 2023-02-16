@@ -1,0 +1,7 @@
+*.pkl
+*.tif
+*.cpg
+*.prj
+*.shx
+*.shp
+.ipynb_checkpoints/
