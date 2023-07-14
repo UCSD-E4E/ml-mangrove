@@ -1,5 +1,6 @@
 from torch.utils.data import Dataset
 import numpy as np
+import torch
 
 class SegmentationDataset(Dataset):
   def __init__(self, images, labels, transforms):
