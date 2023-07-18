@@ -20,7 +20,8 @@ class SegmentationDataset(Dataset):
       print ("no index at", idx)
     #image = self.images[idx]
 		# load the image from disk, swap its channels from BGR to RGB,
-		# and read the associated mask from disk in graysscale mode
+
+		# and read the associated mask from disk in grayscale mode
 		# check to see if we are applying any transformations
       if self.transforms is not None:
 			# apply the transformations to both image and its mask
@@ -28,3 +29,4 @@ class SegmentationDataset(Dataset):
         mask = self.transforms(mask)
 		# return a tuple of the image and its mask
     return (image, torch.Tensor(mask).long())
+
