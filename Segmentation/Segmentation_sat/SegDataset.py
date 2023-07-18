@@ -1,5 +1,6 @@
 from torch.utils.data import Dataset
 import numpy as np
+import torch
 
 class SegmentationDataset(Dataset):
   def __init__(self, images, labels, transforms):
@@ -19,6 +20,7 @@ class SegmentationDataset(Dataset):
       print ("no index at", idx)
     #image = self.images[idx]
 		# load the image from disk, swap its channels from BGR to RGB,
+
 		# and read the associated mask from disk in grayscale mode
 		# check to see if we are applying any transformations
       if self.transforms is not None:
@@ -26,4 +28,5 @@ class SegmentationDataset(Dataset):
         image = self.transforms(image)
         mask = self.transforms(mask)
 		# return a tuple of the image and its mask
-    return (image, mask)
+    return (image, torch.Tensor(mask).long())
+
