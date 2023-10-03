@@ -6,7 +6,7 @@ Fiona==1.8.13.post1
 tensorflow_gpu==2.2.1
 joblib==0.14.1
 Keras==2.3.1
-Pillow==7.2.0
+Pillow==10.0.1
 rasterio==1.1.5
 tensorflow==2.2.1
 
