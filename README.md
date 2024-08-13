@@ -7,4 +7,5 @@ Current Models:
 CNN: Resnet50v2 (Merced RS Dataset)
 Unet: Segmentation Tools VGG16 (Imagenet) 
 
+UNet: ResNet18 Encoder (SSL4EO-12)
 
