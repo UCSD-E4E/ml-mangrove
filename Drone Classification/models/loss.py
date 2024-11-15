@@ -77,22 +77,7 @@ class DistanceCountLoss(nn.Module):
         self.smooth = smooth
         self.weight_jaccard = weight_jaccard
         self.weight_distance_count = weight_distance_count
-
-    def jaccard_loss(self, y_pred, y_true):
-        # Apply sigmoid to predictions to get probabilities
-        y_pred = torch.sigmoid(y_pred)
-
-        # Flatten the tensors
-        y_pred = y_pred.view(-1)
-        y_true = y_true.view(-1)
-
-        # Calculate intersection and union
-        intersection = (y_pred * y_true).sum()
-        union = y_pred.sum() + y_true.sum() - intersection
-
-        # Jaccard index and loss
-        jaccard_index = (intersection + self.smooth) / (union + self.smooth)
-        return 1 - jaccard_index
+        self.jaccard = JaccardLoss(smooth)
 
     def chamfer_distance(self, pred_points, label_points):
         # Check if either set is empty
@@ -117,7 +102,7 @@ class DistanceCountLoss(nn.Module):
 
     def forward(self, y_pred, y_true):
         # Calculate Jaccard loss
-        jaccard_loss_value = self.jaccard_loss(y_pred, y_true)
+        jaccard_loss_value = self.jaccard.forward(y_pred, y_true)
         
         # Threshold to obtain positive pixels in predictions and labels
         pred_positives = self.sample_points((y_pred > 0.5).nonzero(as_tuple=False).float())
