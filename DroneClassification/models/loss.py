@@ -4,7 +4,7 @@ from torch.nn import functional as F
 
 class LandmassLoss(nn.Module):
     """
-    Loss function to encourage the model to accurately predict the overall mangrove coverage in the image.
+    A Loss function to encourage the model to accurately predict the overall mangrove coverage in the image.
 
     This will allow the model to train on the overall size of the mangrove area, rather than individual pixels.
     It is also a very simple calculation - essentially the normalized absolute difference.
@@ -15,6 +15,11 @@ class LandmassLoss(nn.Module):
         return (prediction.sum() - target.sum()) / (target.sum() + 1)
 
 class JaccardLoss(nn.Module):
+    """
+    A Loss function to calculate the Jaccard index between the prediction and the target.
+
+    The Jaccard index is a measure of the similarity between two sets defined by the IOU (Intersection over Union).
+    """
     def __init__(self, smooth=1e-10):
         super(JaccardLoss, self).__init__()
         self.smooth = smooth
@@ -36,10 +41,13 @@ class JaccardLoss(nn.Module):
         # Return the Jaccard loss (1 - Jaccard index)
         return 1 - jaccard_index
 
-# This loss checks how close a positive pixel is to a true positive. 
-# Total positive count is used to check accuracy to mangrove size (Overall size is what we care about to monitor health).
-# It also incorporates Jaccard loss to increase IOU
+
 class DistanceCountLoss(nn.Module):
+    """
+    This loss checks how close a positive pixel is to a true positive.
+    Total positive count is used to check accuracy to mangrove size (Overall size is what we care about to monitor health).
+    It also incorporates Jaccard loss to increase IOU.
+    """
     def __init__(self, smooth=1e-10, weight_jaccard=0.9, weight_distance_count=0.1):
         super(DistanceCountLoss, self).__init__()
         self.max_samples = 100
