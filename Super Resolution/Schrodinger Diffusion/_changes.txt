@@ -1,0 +1,11 @@
+(ctrl f to find each reference below)
+
+# change 0: using default pytorch unet instead of torchgeo (change this back later)
+
+# change 1: In runner.py, commented out loading original unet weights (change this back later)
+
+# small changes:    added underscore to parsing option, 
+                    removed singleton dim from dummy inputs in ipynb,
+                    moved step to opt.device 
+                    timestep to float in DiffusionLayer forward method
+                    
