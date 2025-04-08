@@ -7,5 +7,5 @@
 # small changes:    added underscore to parsing option, 
                     removed singleton dim from dummy inputs in ipynb,
                     moved step to opt.device 
-                    timestep to float in DiffusionLayer forward method
+                    timestep casted to float in DiffusionLayer forward method
                     
