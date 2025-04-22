@@ -20,7 +20,7 @@ class SuperResolutionDataset(Dataset):
 
 # Example usage
 # hr_images and lr_images should be lists of image paths or preloaded image arrays
-hr_images = [...]  # Your high-resolution images
-lr_images = [...]  # Your low-resolution images
-dataset = SuperResolutionDataset(hr_images, lr_images, transform=ToTensor())
-data_loader = DataLoader(dataset, batch_size=16, shuffle=True)
+# hr_images = [...]  # Your high-resolution images
+# lr_images = [...]  # Your low-resolution images
+# dataset = SuperResolutionDataset(hr_images, lr_images, transform=ToTensor())
+# data_loader = DataLoader(dataset, batch_size=16, shuffle=True)

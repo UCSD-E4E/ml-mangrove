@@ -8,7 +8,7 @@ import torch.nn.functional as F
 from torch.optim import AdamW, lr_scheduler
 from torch_ema import ExponentialMovingAverage
 import torchvision.utils as tu
-from models import ResNet_UNet_Diffusion, ResNet_UNet
+from models.models import ResNet_UNet_Diffusion, ResNet_UNet
 from . import util
 from .diffusion import Diffusion
 from typing import Tuple
@@ -118,7 +118,8 @@ class Runner(object):
         self.noise_levels = torch.linspace(opt.t0, opt.T, opt.interval, device=opt.device) * opt.interval
 
         # Build Model
-        unet = ResNet_UNet().load_state_dict(torch.load(opt.unet_path)) if opt.unet_path else None
+        unet = ResNet_UNet()
+        # change 1: if opt.unet_path: unet = unet.load_state_dict(torch.load(opt.unet_path)) 
         self.net = ResNet_UNet_Diffusion(unet=unet, num_timesteps=len(betas))
         self.ema = ExponentialMovingAverage(self.net.parameters(), decay=opt.ema)
         if opt.load:
@@ -149,12 +150,14 @@ class Runner(object):
             for _ in range(n_inner_loop):
                 # sample from boundary pair
                 x0, x1 = self.sample_batch(opt, train_loader)
-                step = torch.randint(0, opt.interval, (x0.shape[0],))
-                xt = self.diffusion.q_sample(step, x0, x1, ot_ode=opt.ot_ode)
+                step = torch.randint(0, opt.interval, (x0.shape[0],)).to(opt.device) 
+                xt = self.diffusion.q_sample(step, x0, x1, ot_ode=opt.ot_ode).to(opt.device) # intermediate noisy image
 
                 # predict diffusion step
-                pred = self.net(xt, diffuse=True, return_encoding_only=True, step=step)
-                label = self.compute_label(step, x0, xt)
+                pred = self.net(xt, diffuse=True, return_encoding_only=True, step=step) # predicted noise
+                label = self.compute_label(step, x0, xt) # ground truth noise
+                print("pred shape", pred.shape)
+                print("label shape", label.shape)
                 loss = F.mse_loss(pred, label)
                 loss.backward()
 
@@ -265,7 +268,7 @@ class Runner(object):
         Returns:
             tuple: (high_res_img, low_res_img)
         """
-        if opt.diffusion_type == "schrodinger bridge":
+        if opt.diffusion_type == "schrodinger_bridge":
             low_res_img, high_res_img = next(loader)
             with torch.no_grad():
                 high_res_img = high_res_img.to(opt.device)
