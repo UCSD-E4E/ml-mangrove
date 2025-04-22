@@ -4,10 +4,7 @@ import torch.nn as nn
 import numpy as np
 from torch.nn import Module
 from i2sb.diffusion import Diffusion
-
-cwd = os.path.dirname(os.path.realpath(__file__))
-
-from ....DroneClassification.models import ResNet_UNet
+from models.original_classifier import ResNet_UNet
 
 """
    _____   _                       _    __   _                     
@@ -72,7 +69,7 @@ class ResNet_UNet_Diffusion(Module):
 
         # Diffuse
         if diffuse:
-            if step:
+            if step is not None:
                 x = self.diffuser(x, step)
             else:
                 xt = x.clone()
@@ -125,13 +122,13 @@ class DiffusionLayer(nn.Module):
         Args:
             latent (torch.Tensor): Latent space tensor.
             t (torch.Tensor): Current timestep tensor (of shape [batch_size, 1]).
-        """
+         """
         # Embed the timestep
+        t = t.to(torch.float32)
         t_emb = self.timestep_embed(t.view(-1, 1))
         t_emb = t_emb.unsqueeze(2).unsqueeze(3).expand(-1, -1, latent.shape[2], latent.shape[3])
         
         # Concatenate timestep embedding with the latent space
         latent = torch.cat((latent, t_emb), dim=1)
-        
         # Perform the diffusion step
         return self.diffusion_step(latent)
