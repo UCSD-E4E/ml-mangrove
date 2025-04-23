@@ -1,0 +1,295 @@
+[INFO] training the network...
+  0%|          | 0/20 [00:00<?, ?it/s]
+Epoch 1/20:
+Epoch: 1/20/3375
+Train loss: 0.214158, Test loss: 0.1815
+
+Validation Metrics:
+Precision: 0.9007722920275658
+Recall: 0.9009612930038062
+f1_score: 0.9008667826026308
+IOU: 0.8196156465326266
+Accuracy: 0.9343296393747448
+Specificity: 0.9508532631556327
+
+
+  5%|▌         | 1/20 [2:03:50<39:13:05, 7430.79s/it]
+Epoch 2/20:
+Epoch: 2/20/3375
+Train loss: 0.185953, Test loss: 0.1663
+
+Validation Metrics:
+Precision: 0.9178500708254056
+Recall: 0.9023420524590858
+f1_score: 0.9100299975629176
+IOU: 0.8349128834079527
+Accuracy: 0.9409094733219766
+Specificity: 0.9600076193384237
+
+
+ 10%|█         | 2/20 [4:07:59<37:12:28, 7441.59s/it]
+Epoch 3/20:
+ Batch 3375/3375
+ 15%|█▌        | 3/20 [6:09:11<34:46:23, 7363.74s/it]
+Epoch: 3/20
+Train loss: 0.174013, Test loss: 0.1659
+
+Validation Metrics:
+Precision: 0.9095434754195729
+Recall: 0.9109575122016345
+f1_score: 0.9102499446485778
+IOU: 0.8352832286436918
+Accuracy: 0.9405054990361708
+Specificity: 0.9551373244638215
+
+
+Epoch 4/20:
+ Batch 3375/3375
+ 20%|██        | 4/20 [8:09:42<32:29:45, 7311.57s/it]
+Epoch: 4/20
+Train loss: 0.167258, Test loss: 0.1568
+
+Validation Metrics:
+Precision: 0.9061038282082907
+Recall: 0.9254554562634636
+f1_score: 0.9156774108990154
+IOU: 0.8444695518685144
+Accuracy: 0.9435503056790265
+Specificity: 0.9525106683764603
+
+
+Epoch 5/20:
+Epoch: 5/20/3375
+Train loss: 0.161516, Test loss: 0.1521
+
+Validation Metrics:
+Precision: 0.9154087512210197
+Recall: 0.9215634985645373
+f1_score: 0.9184758141994986
+IOU: 0.84924204771221
+Accuracy: 0.9458187959740311
+Specificity: 0.9578297421221197
+
+
+ 25%|██▌       | 5/20 [10:09:47<30:18:17, 7273.19s/it]
+Epoch 6/20:
+ Batch 3375/3375
+ 30%|███       | 6/20 [12:11:00<28:17:01, 7272.93s/it]
+Epoch: 6/20
+Train loss: 0.157626, Test loss: 0.1549
+
+Validation Metrics:
+Precision: 0.9291573146313308
+Recall: 0.9046634717927396
+f1_score: 0.9167468144312069
+IOU: 0.846290439432073
+Accuracy: 0.945581928561544
+Specificity: 0.9658442807927394
+
+
+Epoch 7/20:
+ Batch 3375/3375
+ 35%|███▌      | 7/20 [14:10:18<26:07:39, 7235.37s/it]
+Epoch: 7/20
+Train loss: 0.153507, Test loss: 0.1459
+
+Validation Metrics:
+Precision: 0.9208714273249188
+Recall: 0.9232044734814724
+f1_score: 0.9220364745679639
+IOU: 0.8553503461060259
+Accuracy: 0.9482934086031887
+Specificity: 0.9607171626045451
+
+
+Epoch 8/20:
+ Batch 3375/3375
+ 40%|████      | 8/20 [16:12:26<24:13:00, 7265.06s/it]
+Epoch: 8/20
+Train loss: 0.149080, Test loss: 0.1429
+
+Validation Metrics:
+Precision: 0.9140119688716483
+Recall: 0.9336512631512338
+f1_score: 0.9237272404214755
+IOU: 0.8582650003919202
+Accuracy: 0.9489359757790858
+Specificity: 0.9565047907879944
+
+
+Epoch 9/20:
+ Batch 3375/3375
+ 45%|████▌     | 9/20 [18:20:59<22:37:36, 7405.10s/it]
+Epoch: 9/20
+Train loss: 0.145400, Test loss: 0.1420
+
+Validation Metrics:
+Precision: 0.9177427820640083
+Recall: 0.9308477640414664
+f1_score: 0.9242488212971034
+IOU: 0.8591659852155874
+Accuracy: 0.949465986861564
+Specificity: 0.9586855180134093
+
+
+Epoch 10/20:
+Epoch: 10/203375
+Train loss: 0.142287, Test loss: 0.1398
+
+Validation Metrics:
+Precision: 0.9332229515378078
+Recall: 0.9179780296255642
+f1_score: 0.9255377184552461
+IOU: 0.861396192637494
+Accuracy: 0.95108082283653
+Specificity: 0.9674729477042826
+
+
+ 50%|█████     | 10/20 [20:23:00<20:29:49, 7379.00s/it]
+Epoch 11/20:
+ Batch 3375/3375
+ 55%|█████▌    | 11/20 [22:23:14<18:19:17, 7328.63s/it]
+Epoch: 11/20
+Train loss: 0.139375, Test loss: 0.1385
+
+Validation Metrics:
+Precision: 0.9130127384959673
+Recall: 0.9398580356912176
+f1_score: 0.9262409132016349
+IOU: 0.862615203530816
+Accuracy: 0.9504254854464369
+Specificity: 0.9556583658071637
+
+
+Epoch 12/20:
+ Batch 3375/3375
+ 60%|██████    | 12/20 [24:40:39<16:54:18, 7607.36s/it]
+Epoch: 12/20
+Train loss: 0.137146, Test loss: 0.1352
+
+Validation Metrics:
+Precision: 0.928867310537835
+Recall: 0.9273754115382449
+f1_score: 0.9281207615036691
+IOU: 0.8658818346044923
+Accuracy: 0.9524271468157262
+Specificity: 0.9648324799335602
+
+
+Epoch 13/20:
+ Batch 3375/3375
+ 65%|██████▌   | 13/20 [26:46:29<14:45:29, 7589.90s/it]
+Epoch: 13/20
+Train loss: 0.133970, Test loss: 0.1361
+
+Validation Metrics:
+Precision: 0.9195301825385299
+Recall: 0.9360023390997192
+f1_score: 0.9276931465140363
+IOU: 0.865137757441536
+Accuracy: 0.9516766883725676
+Specificity: 0.959438447005808
+
+
+Epoch 14/20:
+Epoch: 14/203375
+Train loss: 0.131836, Test loss: 0.1339
+
+Validation Metrics:
+Precision: 0.9242055099005726
+Recall: 0.9335881559693311
+f1_score: 0.9288731397636194
+IOU: 0.867192462673032
+Accuracy: 0.9526481220242584
+Specificity: 0.96208639942611
+
+
+ 70%|███████   | 14/20 [28:47:09<12:28:25, 7484.19s/it]
+Epoch 15/20:
+ Batch 3375/3375
+ 75%|███████▌  | 15/20 [30:48:31<10:18:36, 7423.31s/it]
+Epoch: 15/20
+Train loss: 0.129091, Test loss: 0.1303
+
+Validation Metrics:
+Precision: 0.9262103514429172
+Recall: 0.93574859406853
+f1_score: 0.9309550420150232
+IOU: 0.8708287103002321
+Accuracy: 0.9540307853896168
+Specificity: 0.9630839175770519
+
+
+Epoch 16/20:
+ Batch 3375/3375
+ 80%|████████  | 16/20 [32:47:42<8:09:24, 7341.22s/it] 
+Epoch: 16/20
+Train loss: 0.126658, Test loss: 0.1330
+
+Validation Metrics:
+Precision: 0.9202153092856294
+Recall: 0.9386162641024766
+f1_score: 0.9293247092820327
+IOU: 0.8679799723956004
+Accuracy: 0.9527183269668044
+Specificity: 0.9597015073602696
+
+
+Epoch 17/20:
+Epoch: 17/203375
+Train loss: 0.125734, Test loss: 0.1309
+
+Validation Metrics:
+Precision: 0.9253289354509991
+Recall: 0.9359877823884821
+f1_score: 0.9306278399282795
+IOU: 0.8702562818409861
+Accuracy: 0.95378488917347
+Specificity: 0.9625978131207765
+
+
+ 85%|████████▌ | 17/20 [34:48:54<6:06:01, 7320.39s/it]
+Epoch 18/20:
+Epoch: 18/203375
+Train loss: 0.123928, Test loss: 0.1308
+
+Validation Metrics:
+Precision: 0.9155620823329473
+Recall: 0.9462851385302115
+f1_score: 0.930670123955481
+IOU: 0.8703302365384719
+Accuracy: 0.9533070501620541
+Specificity: 0.956784220563628
+
+
+ 90%|█████████ | 18/20 [36:51:10<4:04:10, 7325.06s/it]
+Epoch 19/20:
+ Batch 3375/3375
+ 95%|█████████▌| 19/20 [38:51:07<2:01:26, 7286.61s/it]
+Epoch: 19/20
+Train loss: 0.121764, Test loss: 0.1283
+
+Validation Metrics:
+Precision: 0.9230537933049157
+Recall: 0.9411989768405363
+f1_score: 0.9320380795352973
+IOU: 0.8727259480653947
+Accuracy: 0.9545411888777504
+Specificity: 0.9611480998193024
+
+
+Epoch 20/20:
+Epoch: 20/203375
+Train loss: 0.119686, Test loss: 0.1288
+
+Validation Metrics:
+Precision: 0.9255337132271395
+Recall: 0.938048417816007
+f1_score: 0.9317490448806962
+IOU: 0.8722192481228694
+Accuracy: 0.9544865588612385
+Specificity: 0.962626538450749
+
+
+Saved model to ResNet_UNet_epoch_20.pth
+100%|██████████| 20/20 [40:51:59<00:00, 7355.96s/it]
