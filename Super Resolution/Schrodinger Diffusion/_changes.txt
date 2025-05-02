@@ -8,4 +8,5 @@
                     removed singleton dim from dummy inputs in ipynb,
                     moved step to opt.device 
                     timestep casted to float in DiffusionLayer forward method
+                    computed label passed through UNet (raw image to latent)
                     
