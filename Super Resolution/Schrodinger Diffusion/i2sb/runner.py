@@ -12,6 +12,7 @@ from models.models import ResNet_UNet_Diffusion, ResNet_UNet
 from . import util
 from .diffusion import Diffusion
 from typing import Tuple
+from tqdm import tqdm
 
 def build_optimizer_sched(opt, net):
     """
@@ -147,7 +148,7 @@ class Runner(object):
         n_inner_loop = opt.batch_size // (opt.global_size * opt.microbatch)
         for iteration in range(opt.num_itr):
             optimizer.zero_grad()
-            for _ in range(n_inner_loop):
+            for _ in tqdm(range(n_inner_loop), desc="n_inner_loop"):
                 # sample from boundary pair
                 x0, x1 = self.sample_batch(opt, train_loader)
                 step = torch.randint(0, opt.interval, (x0.shape[0],)).to(opt.device) 
@@ -156,8 +157,9 @@ class Runner(object):
                 # predict diffusion step
                 pred = self.net(xt, diffuse=True, return_encoding_only=True, step=step) # predicted noise
                 label = self.compute_label(step, x0, xt) # ground truth noise
-                print("pred shape", pred.shape)
-                print("label shape", label.shape)
+                label = self.net(label, diffuse=True, return_encoding_only=True, step=step)
+                # print("pred shape", pred.shape)
+                # print("label shape", label.shape)
                 loss = F.mse_loss(pred, label)
                 loss.backward()
 
