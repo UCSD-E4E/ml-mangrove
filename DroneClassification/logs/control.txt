@@ -1,0 +1,759 @@
+[INFO] training the network...
+  0%|          | 0/50 [00:00<?, ?it/s]
+Epoch 1/50:
+Epoch: 1/50 3755
+Train loss: 0.245788, Test loss: 0.2149
+
+Validation Metrics:
+Landmass Captured: 1.0979670047668506
+Precision: 0.8409038298770288
+Recall: 0.9232846636465387
+f1_score: 0.8801708123335824
+IOU: 0.7859866683487213
+Accuracy: 0.9167400943780107
+Specificity: 0.9134992984686969
+
+
+  2%|▏         | 1/50 [2:20:18<114:34:58, 8418.33s/it]
+Epoch 2/50:
+Epoch: 2/50 3755
+Train loss: 0.218717, Test loss: 0.1944
+
+Validation Metrics:
+Landmass Captured: 0.9910405683074449
+Precision: 0.8971338842059287
+Recall: 0.8890960752406758
+f1_score: 0.8930968951612837
+IOU: 0.8068428855761628
+Accuracy: 0.9295071491737095
+Specificity: 0.9495182512958217
+
+
+  4%|▍         | 2/50 [4:35:59<110:04:06, 8255.14s/it]
+Epoch 3/50:
+Epoch: 3/50 3755
+Train loss: 0.204725, Test loss: 0.1844
+
+Validation Metrics:
+Landmass Captured: 1.001446134807892
+Precision: 0.8984946783839401
+Recall: 0.8997940273967575
+f1_score: 0.8991438834696569
+IOU: 0.8167678500107363
+Accuracy: 0.9331470164630352
+Specificity: 0.9496630355088234
+
+
+  6%|▌         | 3/50 [6:51:51<107:09:48, 8208.27s/it]
+Epoch 4/50:
+Epoch: 4/50 3755
+Train loss: 0.196037, Test loss: 0.1862
+
+Validation Metrics:
+Landmass Captured: 1.0848839509698789
+Precision: 0.8628502151687114
+Recall: 0.9360923540920312
+f1_score: 0.897980294588297
+IOU: 0.8148495804372399
+Accuracy: 0.9295565531339517
+Specificity: 0.9263200991731807
+
+
+  8%|▊         | 4/50 [9:06:44<104:18:00, 8162.63s/it]
+Epoch 5/50:
+Epoch: 5/50 3755
+Train loss: 0.189561, Test loss: 0.1712
+
+Validation Metrics:
+Landmass Captured: 1.02854201245248
+Precision: 0.8944753997462386
+Recall: 0.9200055293025295
+f1_score: 0.9070608573693221
+IOU: 0.8299280554505979
+Accuracy: 0.9375608026116935
+Specificity: 0.94625397329147
+
+
+ 10%|█         | 5/50 [11:22:37<101:59:18, 8159.08s/it]
+Epoch 6/50:
+Epoch: 6/50 3755
+Train loss: 0.183701, Test loss: 0.1745
+
+Validation Metrics:
+Landmass Captured: 1.0314050388631901
+Precision: 0.8911738059317034
+Recall: 0.9191611556128917
+f1_score: 0.9049511418740228
+IOU: 0.826402525475183
+Accuracy: 0.9360533091238837
+Specificity: 0.9444181105394777
+
+
+ 12%|█▏        | 6/50 [13:41:44<100:30:13, 8223.03s/it]
+Epoch 7/50:
+Epoch: 7/50 3755
+Train loss: 0.178830, Test loss: 0.1661
+
+Validation Metrics:
+Landmass Captured: 1.0070874859865955
+Precision: 0.9068048907215965
+Recall: 0.9132318595896867
+f1_score: 0.9100070276021308
+IOU: 0.8348742153816017
+Accuracy: 0.9401795679112152
+Specificity: 0.9535237651654517
+
+
+ 14%|█▍        | 7/50 [16:00:23<98:35:47, 8254.60s/it] 
+Epoch 8/50:
+Epoch: 8/50 3755
+Train loss: 0.174213, Test loss: 0.1696
+
+Validation Metrics:
+Landmass Captured: 1.0503755482822295
+Precision: 0.8861972447980487
+Recall: 0.9308399175714014
+f1_score: 0.9079701696624891
+IOU: 0.8314518014419671
+Accuracy: 0.93750623624461
+Specificity: 0.940807321083476
+
+
+ 16%|█▌        | 8/50 [18:17:20<96:09:48, 8242.58s/it]
+Epoch 9/50:
+Epoch: 9/50 3755
+Train loss: 0.170749, Test loss: 0.1681
+
+Validation Metrics:
+Landmass Captured: 0.9891520396017731
+Precision: 0.9139527927874658
+Recall: 0.9040382675191702
+f1_score: 0.908968495418813
+IOU: 0.8331276334387224
+Accuracy: 0.9400299590893056
+Specificity: 0.9578526334868778
+
+
+ 18%|█▊        | 9/50 [20:36:33<94:16:02, 8277.14s/it]
+Epoch 10/50:
+Epoch: 10/503755
+Train loss: 0.167029, Test loss: 0.1638
+
+Validation Metrics:
+Landmass Captured: 1.0209924858414083
+Precision: 0.9021354519408957
+Recall: 0.9210735194190542
+f1_score: 0.9115061287704157
+IOU: 0.8374012503540883
+Accuracy: 0.9407685261323315
+Specificity: 0.9505212684389149
+
+
+Saved model to trained_models/ResNet_Unet_control/epoch_9.pth
+ 20%|██        | 10/50 [22:53:27<91:44:59, 8257.49s/it]
+Epoch 11/50:
+Epoch: 11/503755
+Train loss: 0.163962, Test loss: 0.1573
+
+Validation Metrics:
+Landmass Captured: 1.0397688241989682
+Precision: 0.897799213224989
+Recall: 0.9335036336984565
+f1_score: 0.9153033637064812
+IOU: 0.8438335043004599
+Accuracy: 0.9427834381105519
+Specificity: 0.9473786912127669
+
+
+ 22%|██▏       | 11/50 [25:15:02<90:14:37, 8330.20s/it]
+Epoch 12/50:
+Epoch: 12/503755
+Train loss: 0.160143, Test loss: 0.1579
+
+Validation Metrics:
+Landmass Captured: 1.039238263113525
+Precision: 0.8976692620836859
+Recall: 0.9328922419986222
+f1_score: 0.9149418783372875
+IOU: 0.8432192341321368
+Accuracy: 0.9425541836471584
+Specificity: 0.9473386667735505
+
+
+ 24%|██▍       | 12/50 [27:37:46<88:40:48, 8401.29s/it]
+Epoch 13/50:
+Epoch: 13/503755
+Train loss: 0.158266, Test loss: 0.1535
+
+Validation Metrics:
+Landmass Captured: 1.0227039678417318
+Precision: 0.9073126291134577
+Recall: 0.9279122253106025
+f1_score: 0.917496816483878
+IOU: 0.8475696242330852
+Accuracy: 0.9447314999576715
+Specificity: 0.9530602125718486
+
+
+ 26%|██▌       | 13/50 [29:55:16<85:52:38, 8355.63s/it]
+Epoch 14/50:
+Epoch: 14/503755
+Train loss: 0.153980, Test loss: 0.1553
+
+Validation Metrics:
+Landmass Captured: 0.99614108486686
+Precision: 0.9183155630159663
+Recall: 0.9147718606361088
+f1_score: 0.9165402865048021
+IOU: 0.845938501532355
+Accuracy: 0.9448249457959248
+Specificity: 0.9597068901819673
+
+
+ 28%|██▊       | 14/50 [32:11:48<83:03:39, 8306.10s/it]
+Epoch 15/50:
+Epoch: 15/503755
+Train loss: 0.152113, Test loss: 0.1520
+
+Validation Metrics:
+Landmass Captured: 1.0276938490024028
+Precision: 0.9059870786307456
+Recall: 0.9310773503916486
+f1_score: 0.9183608754642125
+IOU: 0.8490455408206041
+Accuracy: 0.9451754129262387
+Specificity: 0.95215661242208
+
+
+ 30%|███       | 15/50 [34:27:48<80:19:30, 8262.02s/it]
+Epoch 16/50:
+Epoch: 16/503755
+Train loss: 0.149149, Test loss: 0.1536
+
+Validation Metrics:
+Landmass Captured: 0.9818731896403057
+Precision: 0.9260484652624296
+Recall: 0.9092621627068065
+f1_score: 0.9175785477007
+IOU: 0.8477091300727294
+Accuracy: 0.9459008091175439
+Specificity: 0.9640438480756985
+
+
+ 32%|███▏      | 16/50 [36:43:25<77:40:25, 8224.29s/it]
+Epoch 17/50:
+Epoch: 17/503755
+Train loss: 0.147029, Test loss: 0.1486
+
+Validation Metrics:
+Landmass Captured: 1.0210868590709066
+Precision: 0.9109102540634437
+Recall: 0.9301184888463333
+f1_score: 0.920414167619154
+IOU: 0.8525622882520922
+Accuracy: 0.9467284435058249
+Specificity: 0.9549535032596359
+
+
+ 34%|███▍      | 17/50 [39:00:12<75:20:29, 8219.07s/it]
+Epoch 18/50:
+Epoch: 18/503755
+Train loss: 0.144629, Test loss: 0.1518
+
+Validation Metrics:
+Landmass Captured: 1.0053508845445212
+Precision: 0.9161592037739807
+Recall: 0.921061466791945
+f1_score: 0.9186037949192815
+IOU: 0.8494609011973683
+Accuracy: 0.9459408545683388
+Specificity: 0.9582608430807492
+
+
+ 36%|███▌      | 18/50 [41:15:35<72:48:11, 8190.37s/it]
+Epoch 19/50:
+Epoch: 19/503755
+Train loss: 0.142796, Test loss: 0.1517
+
+Validation Metrics:
+Landmass Captured: 0.9870046088685861
+Precision: 0.9247533712485868
+Recall: 0.9127358402749997
+f1_score: 0.9187053072859722
+IOU: 0.8496345293067521
+Accuracy: 0.9465022258402926
+Specificity: 0.9632229540978311
+
+
+ 38%|███▊      | 19/50 [43:34:18<70:52:15, 8230.16s/it]
+Epoch 20/50:
+Epoch: 20/503755
+Train loss: 0.140264, Test loss: 0.1456
+
+Validation Metrics:
+Landmass Captured: 1.0023757534419144
+Precision: 0.9210727525073249
+Recall: 0.923260993746664
+f1_score: 0.9221655749889184
+IOU: 0.8555725755182086
+Accuracy: 0.9483830967991788
+Specificity: 0.9608232751999813
+
+
+Saved model to trained_models/ResNet_Unet_control/epoch_19.pth
+ 40%|████      | 20/50 [45:53:05<68:49:35, 8259.18s/it]
+Epoch 21/50:
+Epoch: 21/503755
+Train loss: 0.138568, Test loss: 0.1457
+
+Validation Metrics:
+Landmass Captured: 1.0140402580919798
+Precision: 0.9157143388076044
+Recall: 0.9285712047960676
+f1_score: 0.922097957970372
+IOU: 0.8554561750658844
+Accuracy: 0.9480373087659023
+Specificity: 0.9576767010626855
+
+
+ 42%|████▏     | 21/50 [48:11:15<66:36:30, 8268.64s/it]
+Epoch 22/50:
+Epoch: 22/503755
+Train loss: 0.136863, Test loss: 0.1489
+
+Validation Metrics:
+Landmass Captured: 0.9803128285080809
+Precision: 0.929545680035967
+Recall: 0.9112455551730946
+f1_score: 0.9203046527619155
+IOU: 0.8523743805288237
+Accuracy: 0.9477313341946533
+Specificity: 0.965798675128474
+
+
+ 44%|████▍     | 22/50 [50:35:13<65:10:25, 8379.47s/it]
+Epoch 23/50:
+Epoch: 23/503755
+Train loss: 0.135010, Test loss: 0.1444
+
+Validation Metrics:
+Landmass Captured: 1.0135402028966616
+Precision: 0.9167461017744106
+Recall: 0.9291590300324777
+f1_score: 0.9229108300673806
+IOU: 0.8568564756111289
+Accuracy: 0.9485922824452113
+Specificity: 0.9582154070559693
+
+
+ 46%|████▌     | 23/50 [52:57:34<63:12:34, 8427.96s/it]
+Epoch 24/50:
+Epoch: 24/503755
+Train loss: 0.133646, Test loss: 0.1424
+
+Validation Metrics:
+Landmass Captured: 0.9995319309062733
+Precision: 0.9242965440437972
+Recall: 0.9238639082127219
+f1_score: 0.9240801754904044
+IOU: 0.8588745689406739
+Accuracy: 0.9497242932730023
+Specificity: 0.9625300604501367
+
+
+ 48%|████▊     | 24/50 [55:13:35<60:17:17, 8347.61s/it]
+Epoch 25/50:
+Epoch: 25/503755
+Train loss: 0.131249, Test loss: 0.1427
+
+Validation Metrics:
+Landmass Captured: 0.9918726199250653
+Precision: 0.9276668099061891
+Recall: 0.9201273090252736
+f1_score: 0.92388167786208
+IOU: 0.8585316863917046
+Accuracy: 0.9497859310218142
+Specificity: 0.9644725417903997
+
+
+ 50%|█████     | 25/50 [57:30:15<57:39:42, 8303.29s/it]
+Epoch 26/50:
+Epoch: 26/503755
+Train loss: 0.130140, Test loss: 0.1435
+
+Validation Metrics:
+Landmass Captured: 0.9754646160748462
+Precision: 0.935136475370852
+Recall: 0.912192543783045
+f1_score: 0.9235220271086801
+IOU: 0.857910751883
+Accuracy: 0.9499642667112174
+Specificity: 0.9686683923135812
+
+
+ 52%|█████▏    | 26/50 [59:47:53<55:15:53, 8289.73s/it]
+Epoch 27/50:
+Epoch: 27/503755
+Train loss: 0.128659, Test loss: 0.1417
+
+Validation Metrics:
+Landmass Captured: 1.021501689624255
+Precision: 0.9147107296395632
+Recall: 0.9343785527470128
+f1_score: 0.9244400428730579
+IOU: 0.8594965224834525
+Accuracy: 0.949412821679627
+Specificity: 0.9568576198573967
+
+
+ 54%|█████▍    | 27/50 [62:09:43<53:23:08, 8356.00s/it]
+Epoch 28/50:
+Epoch: 28/503755
+Train loss: 0.127449, Test loss: 0.1401
+
+Validation Metrics:
+Landmass Captured: 1.0249343652854959
+Precision: 0.9140326530560007
+Recall: 0.9368234778036122
+f1_score: 0.9252877461245899
+IOU: 0.8609632418240362
+Accuracy: 0.94989541887802
+Specificity: 0.9563684947587673
+
+
+ 56%|█████▌    | 28/50 [64:26:32<50:47:39, 8311.77s/it]
+Epoch 29/50:
+Epoch: 29/503755
+Train loss: 0.125949, Test loss: 0.1410
+
+Validation Metrics:
+Landmass Captured: 1.0274280155250501
+Precision: 0.9125128555429551
+Recall: 0.9375412735385897
+f1_score: 0.92485776633011
+IOU: 0.860218989977913
+Accuracy: 0.9495450023634394
+Specificity: 0.9554891117259002
+
+
+ 58%|█████▊    | 29/50 [66:42:51<48:15:09, 8271.89s/it]
+Epoch 30/50:
+Epoch: 30/503755
+Train loss: 0.125120, Test loss: 0.1395
+
+Validation Metrics:
+Landmass Captured: 0.9958331042966948
+Precision: 0.9277404395319221
+Recall: 0.923874639244923
+f1_score: 0.9258035038812509
+IOU: 0.8618567526763802
+Accuracy: 0.9509564088826963
+Specificity: 0.964366991754507
+
+
+Saved model to trained_models/ResNet_Unet_control/epoch_29.pth
+ 60%|██████    | 30/50 [69:00:27<45:55:44, 8267.23s/it]
+Epoch 31/50:
+Batch 373 / 3755
+ 62%|██████▏   | 31/50 [71:15:39<43:23:11, 8220.60s/it]
+Epoch: 31/50375
+Train loss: 0.124047, Test loss: 0.1403
+
+Validation Metrics:
+Landmass Captured: 1.0047262542626394
+Precision: 0.9230092611672204
+Recall: 0.9273716396336595
+f1_score: 0.9251853081224699
+IOU: 0.8607858778952105
+Accuracy: 0.9503274316643573
+Specificity: 0.9616948775908868
+
+
+Epoch 32/50:
+Epoch: 32/503755
+Train loss: 0.123327, Test loss: 0.1404
+
+Validation Metrics:
+Landmass Captured: 0.9973691989354798
+Precision: 0.9264149967273115
+Recall: 0.9239777824170682
+f1_score: 0.9251947845038873
+IOU: 0.8608022841393008
+Accuracy: 0.9505159914932184
+Specificity: 0.9636574094312318
+
+
+ 64%|██████▍   | 32/50 [73:35:07<41:19:30, 8265.02s/it]
+Epoch 33/50:
+Epoch: 33/503755
+Train loss: 0.121391, Test loss: 0.1364
+
+Validation Metrics:
+Landmass Captured: 1.0205320985616686
+Precision: 0.9180541032513932
+Recall: 0.9369036782694299
+f1_score: 0.9273831186404474
+IOU: 0.8645986603016913
+Accuracy: 0.9514065208806187
+Specificity: 0.9585881628656044
+
+
+ 66%|██████▌   | 33/50 [75:58:48<39:31:56, 8371.54s/it]
+Epoch 34/50:
+Epoch: 34/503755
+Train loss: 0.120876, Test loss: 0.1359
+
+Validation Metrics:
+Landmass Captured: 0.9937608135224751
+Precision: 0.9306639384513851
+Recall: 0.9248573525646696
+f1_score: 0.9277515600720846
+IOU: 0.8652393657336122
+Accuracy: 0.9522936517162711
+Specificity: 0.9658797935319434
+
+
+ 68%|██████▊   | 34/50 [78:17:19<37:07:33, 8353.36s/it]
+Epoch 35/50:
+Epoch: 35/503755
+Train loss: 0.119431, Test loss: 0.1359
+
+Validation Metrics:
+Landmass Captured: 1.016831685197073
+Precision: 0.9200496923811603
+Recall: 0.9355356788446139
+f1_score: 0.9277280656335358
+IOU: 0.8651984966683568
+Accuracy: 0.9517259229355641
+Specificity: 0.9597431468026241
+
+
+ 70%|███████   | 35/50 [80:32:53<34:31:55, 8287.70s/it]
+Epoch 36/50:
+Epoch: 36/503755
+Train loss: 0.118880, Test loss: 0.1357
+
+Validation Metrics:
+Landmass Captured: 1.0037950674707286
+Precision: 0.926026996569794
+Recall: 0.9295413323673578
+f1_score: 0.927780836497327
+IOU: 0.8652902951916083
+Accuracy: 0.9520729827087286
+Specificity: 0.9632303984705923
+
+
+ 72%|███████▏  | 36/50 [82:50:36<32:12:02, 8280.17s/it]
+Epoch 37/50:
+Epoch: 37/503755
+Train loss: 0.118050, Test loss: 0.1376
+
+Validation Metrics:
+Landmass Captured: 0.9918351222344207
+Precision: 0.9306966121802701
+Recall: 0.9230975902939265
+f1_score: 0.926881526387001
+IOU: 0.8637271179074534
+Accuracy: 0.951765792299953
+Specificity: 0.9659619583831138
+
+
+ 74%|███████▍  | 37/50 [85:09:14<29:56:32, 8291.73s/it]
+Epoch 38/50:
+Epoch: 38/503755
+Train loss: 0.117217, Test loss: 0.1350
+
+Validation Metrics:
+Landmass Captured: 1.0203275013499067
+Precision: 0.9189641066752229
+Recall: 0.9376443504217811
+f1_score: 0.9282102530241805
+IOU: 0.8660376306483941
+Accuracy: 0.9519648840937172
+Specificity: 0.9590562487205462
+
+
+ 76%|███████▌  | 38/50 [87:28:00<27:40:21, 8301.83s/it]
+Epoch 39/50:
+Epoch: 39/503755
+Train loss: 0.116281, Test loss: 0.1375
+
+Validation Metrics:
+Landmass Captured: 0.9937103770294824
+Precision: 0.9298866394883928
+Recall: 0.9240380046851137
+f1_score: 0.9269530966500102
+IOU: 0.8638514250925257
+Accuracy: 0.9517676385313841
+Specificity: 0.9654990363975275
+
+
+ 78%|███████▊  | 39/50 [89:44:31<25:15:56, 8268.78s/it]
+Epoch 40/50:
+Epoch: 40/503755
+Train loss: 0.115702, Test loss: 0.1371
+
+Validation Metrics:
+Landmass Captured: 0.9731317981240218
+Precision: 0.9398586489322176
+Recall: 0.9146063353670691
+f1_score: 0.9270605613378483
+IOU: 0.8640381068420786
+Accuracy: 0.9523357067471973
+Specificity: 0.9710188603845515
+
+
+Saved model to trained_models/ResNet_Unet_control/epoch_39.pth
+ 80%|████████  | 40/50 [92:02:59<23:00:03, 8280.31s/it]
+Epoch 41/50:
+Epoch: 41/503755
+Train loss: 0.114897, Test loss: 0.1350
+
+Validation Metrics:
+Landmass Captured: 0.9917376732797909
+Precision: 0.9321199841166449
+Recall: 0.9244185031390734
+f1_score: 0.9282532695961719
+IOU: 0.8661125275804774
+Accuracy: 0.9526730085820982
+Specificity: 0.9666643168095858
+
+
+ 82%|████████▏ | 41/50 [94:20:25<20:40:32, 8270.24s/it]
+Epoch 42/50:
+Epoch: 42/503755
+Train loss: 0.113865, Test loss: 0.1355
+
+Validation Metrics:
+Landmass Captured: 0.9889199185194856
+Precision: 0.9332426015229711
+Recall: 0.9229021978409823
+f1_score: 0.9280435969861033
+IOU: 0.865747519560338
+Accuracy: 0.9526018504562622
+Specificity: 0.9673087790060506
+
+
+ 84%|████████▍ | 42/50 [96:37:44<18:21:25, 8260.66s/it]
+Epoch 43/50:
+Epoch: 43/503755
+Train loss: 0.113879, Test loss: 0.1347
+
+Validation Metrics:
+Landmass Captured: 1.0063638070370675
+Precision: 0.925506954331894
+Recall: 0.9313967021949503
+f1_score: 0.9284424876792274
+IOU: 0.8664420500103747
+Accuracy: 0.9524511996417787
+Specificity: 0.9628771461964033
+
+
+ 86%|████████▌ | 43/50 [98:55:52<16:04:42, 8268.91s/it]
+Epoch 44/50:
+Epoch: 44/503755
+Train loss: 0.112735, Test loss: 0.1338
+
+Validation Metrics:
+Landmass Captured: 0.9927903523542264
+Precision: 0.9323267183807992
+Recall: 0.925604973178982
+f1_score: 0.9289536865980532
+IOU: 0.8673328827839694
+Accuracy: 0.9531102620244407
+Specificity: 0.9667305668093965
+
+
+ 88%|████████▊ | 44/50 [101:36:09<14:27:19, 8673.28s/it]
+Epoch 45/50:
+Epoch: 45/503755
+Train loss: 0.112344, Test loss: 0.1349
+
+Validation Metrics:
+Landmass Captured: 0.9885651738493382
+Precision: 0.9336794562579548
+Recall: 0.9230029945962901
+f1_score: 0.9283105290542558
+IOU: 0.8662122323876529
+Accuracy: 0.9527861027005513
+Specificity: 0.967534357562153
+
+
+ 90%|█████████ | 45/50 [104:16:44<12:26:48, 8961.79s/it]
+Epoch 46/50:
+Epoch: 46/503755
+Train loss: 0.111253, Test loss: 0.1332
+
+Validation Metrics:
+Landmass Captured: 1.0002240458490417
+Precision: 0.9291579255249308
+Recall: 0.929366098271291
+f1_score: 0.9292620002394258
+IOU: 0.8678705719300301
+Accuracy: 0.9531395919862883
+Specificity: 0.9649119544882323
+
+
+ 92%|█████████▏| 46/50 [106:55:15<10:08:26, 9126.75s/it]
+Epoch 47/50:
+Epoch: 47/503755
+Train loss: 0.109785, Test loss: 0.1353
+
+Validation Metrics:
+Landmass Captured: 0.98482525646386
+Precision: 0.9352453727862113
+Recall: 0.9210532657521872
+f1_score: 0.9280950672491084
+IOU: 0.8658371082100391
+Accuracy: 0.9527332645265133
+Specificity: 0.9684208379589581
+
+
+ 94%|█████████▍| 47/50 [109:12:58<7:23:22, 8867.66s/it] 
+Epoch 48/50:
+Epoch: 48/503755
+Train loss: 0.110892, Test loss: 0.1331
+
+Validation Metrics:
+Landmass Captured: 0.9982320104440093
+Precision: 0.9301215854621065
+Recall: 0.9284771391677843
+f1_score: 0.9292986348304219
+IOU: 0.8679344820703011
+Accuracy: 0.95321050514598
+Specificity: 0.9654581853604948
+
+
+ 96%|█████████▌| 48/50 [111:28:33<4:48:15, 8647.86s/it]
+Epoch 49/50:
+Epoch: 49/503755
+Train loss: 0.109312, Test loss: 0.1323
+
+Validation Metrics:
+Landmass Captured: 0.9859755203119558
+Precision: 0.9363330570386348
+Recall: 0.9232014709554729
+f1_score: 0.9297208979440272
+IOU: 0.8686714485577289
+Accuracy: 0.9537752321180136
+Specificity: 0.968915009257062
+
+
+ 98%|█████████▊| 49/50 [113:47:15<2:22:29, 8549.86s/it]
+Epoch 50/50:
+Epoch: 50/503755
+Train loss: 0.108672, Test loss: 0.1309
+
+Validation Metrics:
+Landmass Captured: 0.996435980857184
+Precision: 0.9322747757057464
+Recall: 0.9289521293972919
+f1_score: 0.9306104867716724
+IOU: 0.8702259328897829
+Accuracy: 0.9541199507964742
+Specificity: 0.9665827684017555
+
+
+100%|██████████| 50/50 [116:05:19<00:00, 8470.22s/it]  
+Saved model to trained_models/ResNet_Unet_control/epoch_49.pth
+100%|██████████| 50/50 [116:05:19<00:00, 8358.40s/it]
