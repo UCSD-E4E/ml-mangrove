@@ -6,3 +6,6 @@
 *.shp
 *.DS_Store
 .ipynb_checkpoints/
+Drone Classification/data/__pycache__/__init__.cpython-310.pyc
+Drone Classification/data/__pycache__/MemoryMapDataset.cpython-310.pyc
+/Drone Classification/models/__pycache__
