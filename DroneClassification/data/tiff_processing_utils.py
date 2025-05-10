@@ -7,8 +7,9 @@ import rasterio
 from rasterio.features import rasterize
 from shapely.validation import make_valid
 import numpy as np
+from typing import Tuple
 
-def tile_tiff_pair(chunk_path: str, image_size=128) -> tuple[np.ndarray, np.ndarray]:
+def tile_tiff_pair(chunk_path: str, image_size=128) -> Tuple[np.ndarray, np.ndarray]:
     name = chunk_path.split('/')[-1]
     print(f"Processing {name}...")
 
@@ -120,7 +121,7 @@ def tile_generator(data, tile_size):
         if i + tile_size <= nrows and j + tile_size <= ncols:
             yield data[:, i:i+tile_size, j:j+tile_size], (i, j)
 
-def create_pairs(rgb_data, label_data, tile_size) -> tuple[np.ndarray, np.ndarray]:
+def create_pairs(rgb_data, label_data, tile_size) -> Tuple[np.ndarray, np.ndarray]:
     images = []
     labels = []
     for (rgb_tile, _), (label_tile, _) in zip(tile_generator(rgb_data, tile_size), tile_generator(label_data, tile_size)):

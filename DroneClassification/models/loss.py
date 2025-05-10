@@ -1,51 +1,25 @@
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
-from typing import Optional
 
-class BCEDiceLoss(nn.Module):
-    def __init__(self, weight: Optional[torch.tensor] = None, size_average=True):
-        super(BCEDiceLoss, self).__init__()
-        self.bce = nn.BCEWithLogitsLoss(pos_weight=weight, reduction='mean' if size_average else 'sum')
+class LandmassLoss(nn.Module):
+    """
+    A Loss function to encourage the model to accurately predict the overall mangrove coverage in the image.
 
-    def forward(self, inputs, targets):
-        bce_loss = self.bce(inputs, targets)
-        intersection = (inputs * targets).sum()
-        dice = (2. * intersection + 1) / (inputs.sum() + targets.sum() + 1)
-        dice_loss = 1 - dice
-        return bce_loss + dice_loss
-    
-class BCETverskyLoss(nn.Module):
-    def __init__(self, alpha=0.5, beta=0.5, smooth=1e-5, pos_weight=None):
-        super(BCETverskyLoss, self).__init__()
-        self.alpha = alpha
-        self.beta = beta
-        self.smooth = smooth
-        self.bce = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
-
-    def forward(self, inputs, targets):
-        # BCE Loss
-        bce_loss = self.bce(inputs, targets)
-        
-        # Apply sigmoid to the inputs
-        inputs = torch.sigmoid(inputs)
-        
-        # Flatten the tensors
-        inputs = inputs.view(-1)
-        targets = targets.view(-1)
-        
-        # True positives, false positives, and false negatives
-        TP = (inputs * targets).sum()
-        FP = ((1 - targets) * inputs).sum()
-        FN = (targets * (1 - inputs)).sum()
-        
-        # Tversky index
-        Tversky = (TP + self.smooth) / (TP + self.alpha * FP + self.beta * FN + self.smooth)
-        tversky_loss = 1 - Tversky
-        
-        return bce_loss + tversky_loss
+    This will allow the model to train on the overall size of the mangrove area, rather than individual pixels.
+    It is also a very simple calculation - essentially the normalized absolute difference.
+    """
+    def __init__(self):
+        super(LandmassLoss, self).__init__()
+    def forward(self, prediction: torch.tensor, target: torch.tensor):
+        return (prediction.sum() - target.sum()) / (target.sum() + 1)
 
 class JaccardLoss(nn.Module):
+    """
+    A Loss function to calculate the Jaccard index between the prediction and the target.
+
+    The Jaccard index is a measure of the similarity between two sets defined by the IOU (Intersection over Union).
+    """
     def __init__(self, smooth=1e-10):
         super(JaccardLoss, self).__init__()
         self.smooth = smooth
@@ -67,10 +41,13 @@ class JaccardLoss(nn.Module):
         # Return the Jaccard loss (1 - Jaccard index)
         return 1 - jaccard_index
 
-# This loss checks how close a positive pixel is to a true positive. 
-# Total positive count is used to check accuracy to mangrove size (Overall size is what we care about to monitor health).
-# It also incorporates Jaccard loss to increase IOU
+
 class DistanceCountLoss(nn.Module):
+    """
+    This loss checks how close a positive pixel is to a true positive.
+    Total positive count is used to check accuracy to mangrove size (Overall size is what we care about to monitor health).
+    It also incorporates Jaccard loss to increase IOU.
+    """
     def __init__(self, smooth=1e-10, weight_jaccard=0.9, weight_distance_count=0.1):
         super(DistanceCountLoss, self).__init__()
         self.max_samples = 100
@@ -180,4 +157,3 @@ class FocalLoss(nn.Module):
             )
         return loss
     
-
