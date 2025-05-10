@@ -1,10 +1,10 @@
 from torch.utils.data import Dataset, Sampler, BatchSampler, DataLoader
 import numpy as np
-from typing import Optional
+from typing import Optional, List, Tuple
 import torch
 
 class MemmapDataset(Dataset):
-    def __init__(self, images: np.ndarray, labels: np.ndarray, validation_indices: Optional[tuple] = None,):
+    def __init__(self, images: np.ndarray, labels: np.ndarray, validation_indices: Optional[Tuple] = None,):
         """
         Inputs are expected to be memory mapped numpy arrays (.npy)
 
@@ -30,7 +30,7 @@ class MemmapDataset(Dataset):
     def __len__(self) -> int:
         return self.images.shape[0]
 
-    def __getitem__(self, idx) -> tuple:
+    def __getitem__(self, idx) -> Tuple:
         image = self.images[idx]
         label = self.labels[idx]
         
@@ -58,7 +58,7 @@ class MemmapDataset(Dataset):
         
         return train_dataset, val_dataset
     
-    def split_into_folds(self, num_folds: int) -> list[Dataset]:
+    def split_into_folds(self, num_folds: int) -> List[Dataset]:
         """
         Creates a list of validation datasets for cross validation.
         The original dataset will be used as the training dataset.
@@ -92,7 +92,7 @@ class SliceSampler(Sampler):
     Takes slices of the dataset to minimize overhead of accessing a memory mapped array.
     Can optionally skip indices to allow for cross validation with memory mapping.
     """
-    def __init__(self, dataset_len, batch_size, skip_indices: Optional[tuple] = None):
+    def __init__(self, dataset_len, batch_size, skip_indices: Optional[Tuple] = None):
         self.dataset_len = dataset_len
         self.batch_size = batch_size
         self.start_skip = None

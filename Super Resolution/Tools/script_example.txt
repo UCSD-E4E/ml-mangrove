@@ -1,0 +1,39 @@
+var region = ee.Geometry.Rectangle(
+  [-77.1635, 17.8184, -77.1628, 17.8241]
+);
+
+function maskS2clouds(image) {
+  var qa = image.select('QA60');
+  var cloudBitMask = 1 << 10;
+  var cirrusBitMask = 1 << 11;
+  var mask = qa.bitwiseAnd(cloudBitMask).eq(0)
+      .and(qa.bitwiseAnd(cirrusBitMask).eq(0));
+  return image.updateMask(mask).divide(10000);
+}
+
+var dataset = ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED')
+                  .filterDate('2024-01-01', '2024-12-01')
+                  .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE',20))
+                  .map(maskS2clouds);
+
+var meanImage = dataset.mean();
+
+var visualization = {
+  min: 0.0,
+  max: 0.3,
+  bands: ['B4', 'B3', 'B2'],
+};
+
+var center = region.centroid().coordinates().getInfo();
+Map.setCenter(center[0], center[1], 16);
+Map.addLayer(meanImage, visualization, 'RGB');
+
+var visualizationImage = meanImage.visualize(visualization);
+Export.image.toDrive({
+  image: visualizationImage.clip(region),
+  description: 'satellite_image_example',
+  scale: 10,
+  region: region,
+  maxPixels: 1e13,
+  fileFormat: 'GeoTIFF'
+});
