@@ -8,7 +8,6 @@ from rasterio.features import rasterize
 from shapely.validation import make_valid
 import numpy as np
 from typing import Tuple
-import cv2
 
 def tile_tiff_pair(chunk_path: str, image_size=128) -> Tuple[np.ndarray, np.ndarray]:
     name = chunk_path.split('/')[-1]
@@ -45,47 +44,6 @@ def tile_tiff_pair(chunk_path: str, image_size=128) -> Tuple[np.ndarray, np.ndar
     print(f"Number of valid pairs: {len(images)}")
     
     return images, labels
-
-def tile_tiff_triplet(chunk_path: str, image_size=128) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    name = chunk_path.split('/')[-1]
-    print(f"Processing {name}...")
-
-    
-    name_list = name.split(' ')
-    rgb_name = "Chunk" + name_list[1]
-    if len(name_list) > 2:
-        rgb_name += "_" + name_list[2]
-    rgb_name += ".tif"
-
-    rgb_path = os.path.join(chunk_path, rgb_name)
-    label_path = os.path.join(chunk_path, "labels.tif")
-    satellite_path = os.path.join(chunk_path, "satellite.tif")
-    
-    rgb_data, rgb_meta = read_tiff(rgb_path)
-    label_data, label_meta = read_tiff(label_path)
-    # reshape satellite_data to same dims as rgb_data
-    satellite_data, _ = read_tiff(satellite_path)
-    satellite_data = resize_satellite_data(rgb_data, satellite_data)
-    assert satellite_data.shape[1] == rgb_data.shape[1] and satellite_data.shape[2] == rgb_data.shape[2], "Drone data and satellite data have different widths and heights"
-
-    # Ensure we are only using the first three channels (RGB)
-    if rgb_data.shape[0] > 3:
-        rgb_data = rgb_data[:3, :, :]
-
-    if label_meta['nodata'] is None:
-        label_meta['nodata'] = 255  # Set nodata value if not defined
-
-    # Ensure label_data has a single channel
-    if label_data.shape[0] != 1:
-        raise ValueError("Label TIFF should have a single channel.")
-
-    # Create pairs of tiles
-    drone_images, labels, satellite_images = create_triplets(rgb_data, label_data, satellite_data, image_size)
-
-    assert len(drone_images) == len(labels) == len(satellite_images), "Lengths differ between drone_images, labels, and satellite_images"
-    print(f"Number of valid triplets: {len(drone_images)}")
-    
-    return drone_images, labels, satellite_images
 
 def rasterize_shapefile(chunk_path):
     name = chunk_path.split('/')[-1]
@@ -166,19 +124,10 @@ def tile_generator(data, tile_size):
 def create_pairs(rgb_data, label_data, tile_size) -> Tuple[np.ndarray, np.ndarray]:
     images = []
     labels = []
-    total_pixels = tile_size * tile_size
-
-    for idx, ((rgb_tile, _), (label_tile, (i, j))) in enumerate(zip(tile_generator(rgb_data, tile_size), tile_generator(label_data, tile_size))):
-        # label_tile has {0: background, 1: mangrove, 255:nodata}
-        nodata_pixels = int((label_tile == 255).sum())
-        frac_white = nodata_pixels / total_pixels
-        if (frac_white <= 0.05): # 5% threshold for nodata pixels
-            # print(f"Valid tile idx={idx} at top-left=({i}, {j}) with frac_white={frac_white}")
+    for (rgb_tile, _), (label_tile, _) in zip(tile_generator(rgb_data, tile_size), tile_generator(label_data, tile_size)):
+        if not np.any(label_tile == 255):  # Check for nodata values in label tile
             images.append(rgb_tile[:3, :, :])  # Keep only the first three channels (RGB)
-            label_tile_clean = np.where(label_tile == 255, 0, label_tile) # turn nodata pixels into background
-            labels.append(label_tile_clean)
-        # else:
-        #     print(f"Invalid tile at top-left=({i},{j}) with frac_white={frac_white}")
+            labels.append(label_tile)
     
     # Convert lists to numpy arrays
     images = np.array(images)
@@ -188,35 +137,6 @@ def create_pairs(rgb_data, label_data, tile_size) -> Tuple[np.ndarray, np.ndarra
     assert images.shape[0] == labels.shape[0], "Mismatch in number of images and labels"
     
     return images, labels
-
-def create_triplets(rgb_data, label_data, satellite_data, tile_size) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    drone_images = []
-    labels = []
-    satellite_images = []
-    total_pixels = tile_size * tile_size
-
-    for idx, ((rgb_tile, _), (label_tile, (i, j)), (satellite_tile, _)) in enumerate(zip(tile_generator(rgb_data, tile_size), tile_generator(label_data, tile_size), tile_generator(satellite_data, tile_size))):
-        # label_tile has {0: background, 1: mangrove, 255:nodata}
-        nodata_pixels = int((label_tile == 255).sum())
-        frac_white = nodata_pixels / total_pixels
-        if (frac_white <= 0.05): # 5% threshold for nodata pixels
-            # print(f"Valid tile idx={idx} at top-left=({i}, {j}) with frac_white={frac_white}")
-            drone_images.append(rgb_tile[:3, :, :])  # Keep only the first three channels (RGB)
-            label_tile_clean = np.where(label_tile == 255, 0, label_tile) # turn nodata pixels into background
-            labels.append(label_tile_clean)
-            satellite_images.append(satellite_tile)
-        # else:
-        #     print(f"Invalid tile at top-left=({i},{j}) with frac_white={frac_white}")
-    
-    # Convert lists to numpy arrays
-    drone_images = np.array(drone_images)
-    labels = np.array(labels)
-    satellite_images = np.array(satellite_images)
-    
-    # Ensure images and labels have the same length
-    assert drone_images.shape[0] == labels.shape[0] == satellite_images.shape[0], "Mismatch in number of drone_images, labels, and satellite_images"
-    
-    return drone_images, labels, satellite_images
 
 def read_all_layers(shapefile_folder):
     shapefile_path = [os.path.join(shapefile_folder, f) for f in os.listdir(shapefile_folder) if f.endswith('.shp')][0]
@@ -246,16 +166,3 @@ def read_all_layers(shapefile_folder):
     else:
         print(f"No valid layers found in {shapefile_path}")
         return None
-    
-def resize_satellite_data(drone_data, satellite_data):
-    _, H_drone, W_drone = drone_data.shape
-    satellite_resized = np.stack([
-        cv2.resize(
-            satellite_data[i],
-            (W_drone, H_drone),
-            interpolation=cv2.INTER_LINEAR
-        )
-        for i in range(satellite_data.shape[0])
-    ], axis=0)
-
-    return satellite_resized
