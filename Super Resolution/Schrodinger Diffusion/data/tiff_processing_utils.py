@@ -253,7 +253,7 @@ def resize_satellite_data(drone_data, satellite_data):
         cv2.resize(
             satellite_data[i],
             (W_drone, H_drone),
-            interpolation=cv2.INTER_LINEAR
+            interpolation=cv2.INTER_CUBIC
         )
         for i in range(satellite_data.shape[0])
     ], axis=0)
