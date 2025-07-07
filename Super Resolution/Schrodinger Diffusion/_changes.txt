@@ -1,7 +1,4 @@
 (ctrl f to find each reference below)
-
-# change 0: using default pytorch unet instead of torchgeo (change this back later)
-
 # change 1: In runner.py, commented out loading original unet weights (change this back later)
 
 # small changes:    added underscore to parsing option, 
