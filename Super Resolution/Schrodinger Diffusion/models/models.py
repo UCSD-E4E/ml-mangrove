@@ -28,13 +28,14 @@ torchgeo.models.get_weight("ResNet50_Weights.SENTINEL2_ALL_MOCO")
                                                                    
 """       
 class ResNet_UNet_Diffusion(Module):
-    def __init__(self, unet = None, num_timesteps=1000, opt=None):
+    def __init__(self, num_timesteps=100, image_size=224, opt=None, unet=None):
         super(ResNet_UNet_Diffusion, self).__init__()
         if unet is None:
-            unet = ResNet_UNet()
+            unet = ResNet_UNet(ResNet = resnet18(weights=get_weight("ResNet18_Weights.SENTINEL2_ALL_MOCO")), input_image_size=image_size)
         self.opt = opt
         self.input_image_size = unet.input_image_size
         self.num_timesteps = num_timesteps
+        self.image_size = image_size
 
         # Inherit encoder and decoder layers from ResNet UNet
         self.layer1 = unet.layer1
@@ -58,49 +59,52 @@ class ResNet_UNet_Diffusion(Module):
         # Diffusion Pipeline
         self.diffuser = DiffusionLayer(output_channels, 64)
 
-    def forward(self, image: torch.tensor, diffuse: bool = False, return_encoding_only: bool = False, step: int = None):
+    def forward(self, image: torch.tensor, diffuse: bool = True, return_encoding_only: bool = False, step: int = None, latent_input: bool = False):
         """
         Forward pass for the ResNet UNet.
         
         Args:
-            image (torch.Tensor): Input image tensor.
+            image (torch.Tensor): Input tensor.
             diffuse (bool, optional): If True, then diffusion will be applied.
             return_encoding_only (bool, optional): Return only the latent encoding. Defaults to False.
+            step (int, optional): Current diffusion step. If None, all steps will be applied.
+            latent_input (bool, optional): If True, the input is already in the latent space. Defaults to False.
         Returns:
             torch.Tensor: Output tensor.
         """
-        # Encode
-        if len(image.shape) == 3:
-            image = image.unsqueeze(0)
-        image = image[:, :3, :, :]
-        x1 = self.layer1(image)
-        x2 = self.layer2(x1)
-        x3 = self.layer3(x2)
-        x4 = self.layer4(x3)
-        x = self.center(x4)
+
+        if latent_input:
+            x = image
+        else:
+            # Encode image
+            if len(image.shape) == 3:
+                image = image.unsqueeze(0)
+            x1 = self.layer1(image)
+            x2 = self.layer2(x1)
+            x3 = self.layer3(x2)
+            x4 = self.layer4(x3)
+            x = self.center(x4)
 
         # Diffuse
         if diffuse:
             if step is not None:
                 x = self.diffuser(x, step)
             else:
-                xt = x.clone()
-                for i in range(self.num_timesteps):
+                for i in range(1, self.num_timesteps + 1):
                     time_step = torch.tensor([i], dtype=torch.float32)
-                    xt = self.diffuser(xt, time_step)
-                x = xt
-                del xt
+                    x = self.diffuser(x, time_step)
         
-        # Classify
-        if not return_encoding_only:
+        if return_encoding_only:
+            return x
+        else:
+            # Classify
             x = torch.cat((x, self.skip_conv1(x3)), dim=1)
             x = self.decoder1(x)
             x = torch.cat((x, self.skip_conv2(x2)), dim=1)
             x = self.decoder2(x)
             x = torch.cat((x, self.skip_conv3(x1)), dim=1)
             x = self.classification_head(x)
-
-        return x
+            return x
     
 class ResNet_UNet(Module):
     """
@@ -315,40 +319,31 @@ class LatentSpaceExtractor(Module):
 
     Use this when preprocessing a dataset for training the diffusion model.
     """
-    def __init__(self):
+    def __init__(self, drone_resnet=None, satellite_resnet=None, image_size=224):
         super(LatentSpaceExtractor, self).__init__()
-        ResNet = resnet18(pretrained=True) # change 0
-        
-        for param in ResNet.parameters():
-            param.requires_grad = False
-        
-        self.drone_layer1 = nn.Sequential(
-            ResNet.conv1,
-            ResNet.bn1,
-            nn.ReLU(),
-            ResNet.maxpool,
-            ResNet.layer1,
-        )
-        self.drone_layer2 = ResNet.layer2
-        self.drone_layer3 = ResNet.layer3
-        self.drone_layer4 = ResNet.layer4
+        self.image_size = image_size
 
+        # Build Drone Encoder
+        drone_ResNet_UNet = ResNet_UNet(ResNet=drone_resnet, image_size=image_size)
+        self.drone_layer1 = drone_ResNet_UNet.layer1
+        self.drone_layer2 = drone_ResNet_UNet.layer2
+        self.drone_layer3 = drone_ResNet_UNet.layer3
+        self.drone_layer4 = drone_ResNet_UNet.layer4
+        self.drone_center = drone_ResNet_UNet.center
+        del drone_ResNet_UNet
 
-        sat_resnet = resnet18(weights=get_weight("ResNet18_Weights.SENTINEL2_ALL_MOCO"))
-
-        for param in sat_resnet.parameters():
-            param.requires_grad = False
+        # Build Satellite Encoder
+        if satellite_resnet is None:
+            sat_ResNet_UNet = ResNet_UNet(resnet18(weights=get_weight("ResNet18_Weights.SENTINEL2_ALL_MOCO")), image_size=image_size)
+        else:
+            sat_ResNet_UNet = ResNet_UNet(ResNet=satellite_resnet, image_size=image_size)
         
-        self.sat_layer1 = nn.Sequential(
-            sat_resnet.conv1,
-            sat_resnet.bn1,
-            nn.ReLU(),
-            sat_resnet.maxpool,
-            sat_resnet.layer1,
-        )
-        self.sat_layer2 = sat_resnet.layer2
-        self.sat_layer3 = sat_resnet.layer3
-        self.sat_layer4 = sat_resnet.layer4
+        self.sat_layer1 = sat_ResNet_UNet.layer1
+        self.sat_layer2 = sat_ResNet_UNet.layer2
+        self.sat_layer3 = sat_ResNet_UNet.layer3
+        self.sat_layer4 = sat_ResNet_UNet.layer4
+        self.sat_center = sat_ResNet_UNet.center
+        del sat_ResNet_UNet
 
 
     def forward(self, image) -> torch.Tensor:
@@ -373,6 +368,7 @@ class LatentSpaceExtractor(Module):
             x2 = self.sat_layer2(x1)
             x3 = self.sat_layer3(x2)
             x4 = self.sat_layer4(x3)
+            x4 = self.sat_center(x4)
             return x4
         else:
             raise ValueError("Input image must have 3 (drone) or 13 (satellite) channels, got {} channels.".format(image.shape[1]))
