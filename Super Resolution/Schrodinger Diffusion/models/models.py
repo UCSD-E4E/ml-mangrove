@@ -105,14 +105,34 @@ class ResNet_UNet_Diffusion(Module):
             x = torch.cat((x, self.skip_conv3(x1)), dim=1)
             x = self.classification_head(x)
             return x
+
+class Sat2RGB(Module):
+    """
+    Convolutional decoder that takes 13 channel multispectral imagery and performs upsample to 3 channel RGB
+
+    TODO: Figure out dimensions
+    """
+    def __init__(self, input_image_size):
+        super(Image2Image, self).__init__()
+        self.image_size = input_image_size
+        self.decoder1 = Decoder(13, 11, 9)
+        self.decoder12 = Decoder(9, 7, 5)
+        self.decoder2 = Decoder(5, 4, 3)
     
+    def forward(self, image):
+        if len(image.shape)==3:
+            image = image.unsqueeze(0)
+        return self.decoder2(self.decoder1(image))
+
+
+
 class ResNet_UNet(Module):
     """
     UNet architecture with ResNet encoder.
     """
     def __init__(self, ResNet = None, input_image_size=224):
         super(ResNet_UNet, self).__init__()
-        self.input_image_size= input_image_size
+        self.input_image_size=input_image_size
         if ResNet is None:
             ResNet = resnet18(pretrained=True)
         
