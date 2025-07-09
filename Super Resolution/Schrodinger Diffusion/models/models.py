@@ -19,14 +19,35 @@ torchgeo.models.get_weight("ResNet50_Weights.SENTINEL2_ALL_MOCO")
 """
 
 """
-   _____   _                       _    __   _                     
-  / ____| | |                     (_)  / _| (_)                    
- | |      | |   __ _   ___   ___   _  | |_   _    ___   _ __   ___ 
- | |      | |  / _` | / __| / __| | | |  _| | |  / _ \ | '__| / __|
- | |____  | | | (_| | \__ \ \__ \ | | | |   | | |  __/ | |    \__ \
-  \_____| |_|  \__,_| |___/ |___/ |_| |_|   |_|  \___| |_|    |___/
-                                                                   
-"""       
+   _____                            _____                    _         _    _               
+  / ____|                          |  __ \                  | |       | |  (_)              
+ | (___   _   _  _ __    ___  _ __ | |__) | ___  ___   ___  | | _   _ | |_  _   ___   _ __  
+  \___ \ | | | || '_ \  / _ \| '__||  _  / / _ \/ __| / _ \ | || | | || __|| | / _ \ | '_ \ 
+  ____) || |_| || |_) ||  __/| |   | | \ \|  __/\__ \| (_) || || |_| || |_ | || (_) || | | |
+ |_____/  \__,_|| .__/  \___||_|   |_|  \_\\___||___/ \___/ |_| \__,_| \__||_| \___/ |_| |_|
+                | |                                                                         
+                |_|                                                                         
+"""
+
+class Sat2RGB(Module):
+    """
+    Convolutional decoder that takes 13 channel multispectral imagery and performs upsample to 3 channel RGB
+
+    TODO: Figure out dimensions
+    """
+    def __init__(self, input_image_size):
+        super(Image2Image, self).__init__()
+        self.image_size = input_image_size
+        self.decoder1 = Decoder(13, 11, 9)
+        self.decoder12 = Decoder(9, 7, 5)
+        self.decoder2 = Decoder(5, 4, 3)
+    
+    def forward(self, image):
+        if len(image.shape)==3:
+            image = image.unsqueeze(0)
+        return self.decoder2(self.decoder1(image))
+
+
 class ResNet_UNet_Diffusion(Module):
     def __init__(self, num_timesteps=100, image_size=224, opt=None, unet=None):
         super(ResNet_UNet_Diffusion, self).__init__()
@@ -106,24 +127,16 @@ class ResNet_UNet_Diffusion(Module):
             x = self.classification_head(x)
             return x
 
-class Sat2RGB(Module):
-    """
-    Convolutional decoder that takes 13 channel multispectral imagery and performs upsample to 3 channel RGB
 
-    TODO: Figure out dimensions
-    """
-    def __init__(self, input_image_size):
-        super(Image2Image, self).__init__()
-        self.image_size = input_image_size
-        self.decoder1 = Decoder(13, 11, 9)
-        self.decoder12 = Decoder(9, 7, 5)
-        self.decoder2 = Decoder(5, 4, 3)
-    
-    def forward(self, image):
-        if len(image.shape)==3:
-            image = image.unsqueeze(0)
-        return self.decoder2(self.decoder1(image))
+"""
+   _____   _                       _    __   _                     
+  / ____| | |                     (_)  / _| (_)                    
+ | |      | |   __ _   ___   ___   _  | |_   _    ___   _ __   ___ 
+ | |      | |  / _` | / __| / __| | | |  _| | |  / _ \ | '__| / __|
+ | |____  | | | (_| | \__ \ \__ \ | | | |   | | |  __/ | |    \__ \
+  \_____| |_|  \__,_| |___/ |___/ |_| |_|   |_|  \___| |_|    |___/
 
+"""
 
 
 class ResNet_UNet(Module):
@@ -210,128 +223,17 @@ class ResNet_UNet(Module):
 
         return x
 
+
 """
-  _    _          _                             
- | |  | |        | |                            
- | |__| |   ___  | |  _ __     ___   _ __   ___ 
- |  __  |  / _ \ | | | '_ \   / _ \ | '__| / __|
- | |  | | |  __/ | | | |_) | |  __/ | |    \__ \
- |_|  |_|  \___| |_| | .__/   \___| |_|    |___/
-                     | |                        
-                     |_|                        
+  _______             _      
+ |__   __|           | |     
+    | |  ___    ___  | | ___ 
+    | | / _ \  / _ \ | |/ __|
+    | || (_) || (_) || |\__ \
+    |_| \___/  \___/ |_||___/
+
 """
 
-class DiffusionLayer(nn.Module):
-    def __init__(self, latent_dim, time_embedding_dim):
-        super(DiffusionLayer, self).__init__()
-        # Timestep embedding network
-        self.timestep_embed = nn.Sequential(
-            nn.Linear(1, time_embedding_dim),
-            nn.ReLU(),
-            nn.Linear(time_embedding_dim, time_embedding_dim)
-        )
-        # Diffusion step network
-        self.diffusion_step = nn.Sequential(
-            nn.Conv2d(latent_dim + time_embedding_dim, latent_dim, kernel_size=3, padding=1),
-            nn.ReLU(),
-            nn.Conv2d(latent_dim, latent_dim, kernel_size=3, padding=1)
-        )
-
-    def forward(self, latent, t):
-        """
-        Args:
-            latent (torch.Tensor): Latent space tensor.
-            t (torch.Tensor): Current timestep tensor (of shape [batch_size, 1]).
-         """
-        # Embed the timestep
-        t = t.to(torch.float32)
-        t_emb = self.timestep_embed(t.view(-1, 1))
-        t_emb = t_emb.unsqueeze(2).unsqueeze(3).expand(-1, -1, latent.shape[2], latent.shape[3])
-        
-        # Concatenate timestep embedding with the latent space
-        latent = torch.cat((latent, t_emb), dim=1)
-        # Perform the diffusion step
-        return self.diffusion_step(latent)
-    
-
-
-class SegmentModelWrapper(Module):
-    def __init__(self, model: nn.Module, threshold=0.5):
-        super(SegmentModelWrapper, self).__init__()
-        self.model = model
-        self.model.eval()
-        self.threshold = threshold
-        
-        # Standard mean and std values for ResNet
-        mean = [0.485, 0.456, 0.406]
-        std = [0.229, 0.224, 0.225]
-
-        # Convert mean and std to tensors with shape [C, 1, 1]
-        self.mean_tensor = torch.tensor(mean, dtype=torch.float32).view(1, 3, 1, 1)
-        self.std_tensor = torch.tensor(std, dtype=torch.float32).view(1, 3, 1, 1)
-
-    
-    def forward(self, image: np.ndarray):
-        """
-        Expects a numpy array of dimensions CxHxW.
-         
-        It can also accept batched images of size BxCxHxW.
-        """
-        image = torch.tensor(image, dtype=torch.float32)
-        image.div_(255.0)
-        if len(image.shape) == 3:
-            image = image.unsqueeze(0)
-        
-        image = (image - self.mean_tensor) / self.std_tensor
-        
-        out = self.model.forward(image)
-
-        out = torch.sigmoid(out)
-
-        return (out > self.threshold).to(torch.uint8)
-
-class Upsample(Module):
-    """
-    Helper class for the UNet architecture.
-    Uses convolutional layers to upsample the input.
-    """
-    def __init__(self, in_channels, mid_channels, out_channels):
-        super(Upsample, self).__init__()
-        self.upsampler = nn.Sequential(
-            nn.Conv2d(in_channels, mid_channels, kernel_size=3, padding=1),
-            nn.BatchNorm2d(mid_channels),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(mid_channels, out_channels, kernel_size=3, padding=1),
-            nn.BatchNorm2d(out_channels),
-            nn.ReLU(inplace=True),
-            nn.ConvTranspose2d(out_channels, out_channels, kernel_size=2, stride=2)
-        )
-    
-    def forward(self, x) -> torch.Tensor:
-        return self.upsampler(x)
-
-class Decoder(Module):
-    """
-    Helper class for the UNet architecture.
-    Uses convolutional layers to upsample the input.
-    Includes dropout layer to prevent overfitting.
-    """
-    def __init__(self, in_channels: int, mid_channels: int, out_channels: int):
-        super(Decoder, self).__init__()
-        self.decoder = nn.Sequential(
-            nn.Conv2d(in_channels, mid_channels, kernel_size=3, padding=1),
-            nn.BatchNorm2d(mid_channels),
-            nn.ReLU(inplace=True),
-            nn.Dropout(0.5),
-            nn.Conv2d(mid_channels, out_channels, kernel_size=3, padding=1),
-            nn.BatchNorm2d(out_channels),
-            nn.ReLU(inplace=True),
-            nn.ConvTranspose2d(out_channels, out_channels, kernel_size=2, stride=2)
-        )
-
-    def forward(self, x) -> torch.Tensor:
-        return self.decoder(x)
-    
 
 class LatentSpaceExtractor(Module):
     """
@@ -392,3 +294,129 @@ class LatentSpaceExtractor(Module):
             return x4
         else:
             raise ValueError("Input image must have 3 (drone) or 13 (satellite) channels, got {} channels.".format(image.shape[1]))
+
+
+class SegmentModelWrapper(Module):
+    """
+    You can put a segmentation model inside of this wrapper, and it will output 1/0 classifications.
+    """
+    def __init__(self, model: nn.Module, threshold=0.5):
+        super(SegmentModelWrapper, self).__init__()
+        self.model = model
+        self.model.eval()
+        self.threshold = threshold
+        
+        # Standard mean and std values for ResNet
+        mean = [0.485, 0.456, 0.406]
+        std = [0.229, 0.224, 0.225]
+
+        # Convert mean and std to tensors with shape [C, 1, 1]
+        self.mean_tensor = torch.tensor(mean, dtype=torch.float32).view(1, 3, 1, 1)
+        self.std_tensor = torch.tensor(std, dtype=torch.float32).view(1, 3, 1, 1)
+
+    
+    def forward(self, image: np.ndarray):
+        """
+        Expects a numpy array of dimensions CxHxW.
+         
+        It can also accept batched images of size BxCxHxW.
+        """
+        image = torch.tensor(image, dtype=torch.float32)
+        image.div_(255.0)
+        if len(image.shape) == 3:
+            image = image.unsqueeze(0)
+        
+        image = (image - self.mean_tensor) / self.std_tensor
+        
+        out = self.model.forward(image)
+
+        out = torch.sigmoid(out)
+
+        return (out > self.threshold).to(torch.uint8)
+
+"""
+  _    _          _                             
+ | |  | |        | |                            
+ | |__| |   ___  | |  _ __     ___   _ __   ___ 
+ |  __  |  / _ \ | | | '_ \   / _ \ | '__| / __|
+ | |  | | |  __/ | | | |_) | |  __/ | |    \__ \
+ |_|  |_|  \___| |_| | .__/   \___| |_|    |___/
+                     | |                        
+                     |_|                        
+"""
+
+class DiffusionLayer(nn.Module):
+    def __init__(self, latent_dim, time_embedding_dim):
+        super(DiffusionLayer, self).__init__()
+        # Timestep embedding network
+        self.timestep_embed = nn.Sequential(
+            nn.Linear(1, time_embedding_dim),
+            nn.ReLU(),
+            nn.Linear(time_embedding_dim, time_embedding_dim)
+        )
+        # Diffusion step network
+        self.diffusion_step = nn.Sequential(
+            nn.Conv2d(latent_dim + time_embedding_dim, latent_dim, kernel_size=3, padding=1),
+            nn.ReLU(),
+            nn.Conv2d(latent_dim, latent_dim, kernel_size=3, padding=1)
+        )
+
+    def forward(self, latent, t):
+        """
+        Args:
+            latent (torch.Tensor): Latent space tensor.
+            t (torch.Tensor): Current timestep tensor (of shape [batch_size, 1]).
+         """
+        # Embed the timestep
+        t = t.to(torch.float32)
+        t_emb = self.timestep_embed(t.view(-1, 1))
+        t_emb = t_emb.unsqueeze(2).unsqueeze(3).expand(-1, -1, latent.shape[2], latent.shape[3])
+        
+        # Concatenate timestep embedding with the latent space
+        latent = torch.cat((latent, t_emb), dim=1)
+        # Perform the diffusion step
+        return self.diffusion_step(latent)
+    
+
+
+class Upsample(Module):
+    """
+    Helper class for the UNet architecture.
+    Uses convolutional layers to upsample the input.
+    """
+    def __init__(self, in_channels, mid_channels, out_channels):
+        super(Upsample, self).__init__()
+        self.upsampler = nn.Sequential(
+            nn.Conv2d(in_channels, mid_channels, kernel_size=3, padding=1),
+            nn.BatchNorm2d(mid_channels),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(mid_channels, out_channels, kernel_size=3, padding=1),
+            nn.BatchNorm2d(out_channels),
+            nn.ReLU(inplace=True),
+            nn.ConvTranspose2d(out_channels, out_channels, kernel_size=2, stride=2)
+        )
+    
+    def forward(self, x) -> torch.Tensor:
+        return self.upsampler(x)
+
+class Decoder(Module):
+    """
+    Helper class for the UNet architecture.
+    Uses convolutional layers to upsample the input.
+    Includes dropout layer to prevent overfitting.
+    """
+    def __init__(self, in_channels: int, mid_channels: int, out_channels: int):
+        super(Decoder, self).__init__()
+        self.decoder = nn.Sequential(
+            nn.Conv2d(in_channels, mid_channels, kernel_size=3, padding=1),
+            nn.BatchNorm2d(mid_channels),
+            nn.ReLU(inplace=True),
+            nn.Dropout(0.5),
+            nn.Conv2d(mid_channels, out_channels, kernel_size=3, padding=1),
+            nn.BatchNorm2d(out_channels),
+            nn.ReLU(inplace=True),
+            nn.ConvTranspose2d(out_channels, out_channels, kernel_size=2, stride=2)
+        )
+
+    def forward(self, x) -> torch.Tensor:
+        return self.decoder(x)
