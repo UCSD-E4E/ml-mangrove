@@ -10,7 +10,7 @@ import numpy as np
 from typing import Tuple
 import cv2
 
-def tile_tiff_pair(chunk_path: str, image_size=128) -> Tuple[np.ndarray, np.ndarray]:
+def tile_tiff_pair(chunk_path: str, image_size=128, stride_size=None) -> Tuple[np.ndarray, np.ndarray]:
     name = chunk_path.split('/')[-1]
     print(f"Processing {name}...")
 
@@ -39,14 +39,14 @@ def tile_tiff_pair(chunk_path: str, image_size=128) -> Tuple[np.ndarray, np.ndar
         raise ValueError("Label TIFF should have a single channel.")
 
     # Create pairs of tiles
-    images, labels = create_pairs(rgb_data, label_data, image_size)
+    images, labels = create_pairs(rgb_data, label_data, image_size, stride_size)
 
     assert len(images) == len(labels), "Number of images and labels do not match."
     print(f"Number of valid pairs: {len(images)}")
     
     return images, labels
 
-def tile_tiff_triplet(chunk_path: str, image_size=128) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+def tile_tiff_triplet(chunk_path: str, image_size=128, stride_size=128) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     name = chunk_path.split('/')[-1]
     print(f"Processing {name}...")
 
@@ -80,7 +80,7 @@ def tile_tiff_triplet(chunk_path: str, image_size=128) -> Tuple[np.ndarray, np.n
         raise ValueError("Label TIFF should have a single channel.")
 
     # Create pairs of tiles
-    drone_images, labels, satellite_images = create_triplets(rgb_data, label_data, satellite_data, image_size)
+    drone_images, labels, satellite_images = create_triplets(rgb_data, label_data, satellite_data, image_size, stride_size)
 
     assert len(drone_images) == len(labels) == len(satellite_images), "Lengths differ between drone_images, labels, and satellite_images"
     print(f"Number of valid triplets: {len(drone_images)}")
@@ -157,18 +157,21 @@ def read_tiff(tif_path):
         meta = src.meta
     return data, meta
 
-def tile_generator(data, tile_size):
+def tile_generator(data, tile_size, stride_size):
+    if stride_size is None:
+        stride_size = tile_size
+
     nrows, ncols = data.shape[1], data.shape[2]
-    for i, j in product(range(0, nrows, tile_size), range(0, ncols, tile_size)):
+    for i, j in product(range(0, nrows, stride_size), range(0, ncols, stride_size)):
         if i + tile_size <= nrows and j + tile_size <= ncols:
             yield data[:, i:i+tile_size, j:j+tile_size], (i, j)
 
-def create_pairs(rgb_data, label_data, tile_size) -> Tuple[np.ndarray, np.ndarray]:
+def create_pairs(rgb_data, label_data, tile_size, stride_size) -> Tuple[np.ndarray, np.ndarray]:
     images = []
     labels = []
     total_pixels = tile_size * tile_size
 
-    for idx, ((rgb_tile, _), (label_tile, (i, j))) in enumerate(zip(tile_generator(rgb_data, tile_size), tile_generator(label_data, tile_size))):
+    for idx, ((rgb_tile, _), (label_tile, (i, j))) in enumerate(zip(tile_generator(rgb_data, tile_size, stride_size), tile_generator(label_data, tile_size, stride_size))):
         # label_tile has {0: background, 1: mangrove, 255:nodata}
         nodata_pixels = int((label_tile == 255).sum())
         frac_white = nodata_pixels / total_pixels
@@ -189,13 +192,13 @@ def create_pairs(rgb_data, label_data, tile_size) -> Tuple[np.ndarray, np.ndarra
     
     return images, labels
 
-def create_triplets(rgb_data, label_data, satellite_data, tile_size) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+def create_triplets(rgb_data, label_data, satellite_data, tile_size, stride_size) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     drone_images = []
     labels = []
     satellite_images = []
     total_pixels = tile_size * tile_size
 
-    for idx, ((rgb_tile, _), (label_tile, (i, j)), (satellite_tile, _)) in enumerate(zip(tile_generator(rgb_data, tile_size), tile_generator(label_data, tile_size), tile_generator(satellite_data, tile_size))):
+    for idx, ((rgb_tile, _), (label_tile, (i, j)), (satellite_tile, _)) in enumerate(zip(tile_generator(rgb_data, tile_size, stride_size), tile_generator(label_data, tile_size, stride_size), tile_generator(satellite_data, tile_size, stride_size))):
         # label_tile has {0: background, 1: mangrove, 255:nodata}
         nodata_pixels = int((label_tile == 255).sum())
         frac_white = nodata_pixels / total_pixels
@@ -257,5 +260,7 @@ def resize_satellite_data(drone_data, satellite_data):
         )
         for i in range(satellite_data.shape[0])
     ], axis=0)
+
+    assert drone_data.shape[1] == satellite_resized.shape[1] and drone_data.shape[2] == satellite_resized.shape[2], "Mismatch in number of images and labels"
 
     return satellite_resized
