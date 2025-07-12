@@ -148,18 +148,20 @@ class Runner(object):
         n_inner_loop = opt.batch_size // (opt.global_size * opt.microbatch)
         for iteration in range(opt.num_itr):
             optimizer.zero_grad()
-            for _ in tqdm(range(n_inner_loop), desc="n_inner_loop"):
+            print_metrics = (iteration < 50)or (iteration % 1000 == 0)
+            for _ in tqdm(range(n_inner_loop), desc="n_inner_loop", disable=not print_metrics):
                 # sample from boundary pair
                 x0, x1 = self.sample_batch(opt, train_loader)
                 step = torch.randint(0, opt.interval, (x0.shape[0],)).to(opt.device) 
                 xt = self.diffusion.q_sample(step, x0, x1, ot_ode=opt.ot_ode).to(opt.device) # intermediate noisy image
 
                 # predict diffusion step
-                pred = self.net(xt, diffuse=True, return_encoding_only=True, step=step) # predicted noise
+                pred = self.net(xt, diffuse=True, return_encoding_only=True, step=step, latent_input=True) # predicted noise
                 label = self.compute_label(step, x0, xt) # ground truth noise
-                label = self.net(label, diffuse=True, return_encoding_only=True, step=step)
-                # print("pred shape", pred.shape)
-                # print("label shape", label.shape)
+                # label = self.net(label, diffuse=True, return_encoding_only=True, step=step, latent_input=True)
+                # if iteration == 0:
+                #   print("pred shape", pred.shape)
+                #   print("label shape", label.shape)
                 loss = F.mse_loss(pred, label)
                 loss.backward()
 
@@ -169,12 +171,13 @@ class Runner(object):
                 sched.step()
 
             # -------- logging --------
-            print("train_it {}/{} | lr:{} | loss:{}".format(
-                1 + iteration,
-                opt.num_itr,
-                "{:.2e}".format(optimizer.param_groups[0]['lr']),
-                "{:+.4f}".format(loss.item()),
-            ))
+            if print_metrics:
+              print("train_it {}/{} | lr:{} | loss:{}".format(
+                  1 + iteration,
+                  opt.num_itr,
+                  "{:.2e}".format(optimizer.param_groups[0]['lr']),
+                  "{:+.4f}".format(loss.item()),
+              ))
             if iteration % 5000 == 0:
                 torch.save({
                     "net": self.net.state_dict(),
@@ -318,7 +321,7 @@ class Runner(object):
         log_count = min(len(steps) - 1, log_count)
         log_steps = [steps[i] for i in util.space_indices(len(steps) - 1, log_count)]
         assert log_steps[0] == 0
-        self.log.info(f"[DDPM Sampling] steps={opt.interval}, {nfe=}, {log_steps=}!")
+        # self.log.info(f"[DDPM Sampling] steps={opt.interval}, {nfe=}, {log_steps=}!")
 
         x1 = x1.to(opt.device)
         if cond is not None:
@@ -332,7 +335,7 @@ class Runner(object):
 
             def pred_x0_fn(xt, step):
                 step = torch.full((xt.shape[0],), step, device=opt.device, dtype=torch.long)
-                out = self.net(xt, step, cond=cond)
+                out = self.net(xt, diffuse=True, return_encoding_only=True, step=step, latent_input=True)
                 return self.compute_pred_x0(step, xt, out, clip_denoise=clip_denoise)
 
             xs, pred_x0 = self.diffusion.ddpm_sampling(

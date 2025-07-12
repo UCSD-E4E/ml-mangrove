@@ -4,8 +4,7 @@ import numpy as np
 from torch.nn import Module
 from i2sb.diffusion import Diffusion
 from torch.nn import Conv2d, Module
-from torchgeo.models import get_weight
-from torchvision.models.resnet import resnet18
+from torchgeo.models import resnet18, get_weight
 
 """
 Pretrained model Weights from SSL4EO-12 dataset
@@ -110,9 +109,9 @@ class ResNet_UNet(Module):
     """
     UNet architecture with ResNet encoder.
     """
-    def __init__(self, ResNet = None, input_image_size=224):
+    def __init__(self, ResNet = None, image_size=224, num_input_channels=3):
         super(ResNet_UNet, self).__init__()
-        self.input_image_size= input_image_size
+        self.input_image_size= image_size
         if ResNet is None:
             ResNet = resnet18(pretrained=True)
         
@@ -130,7 +129,7 @@ class ResNet_UNet(Module):
         self.layer3 = ResNet.layer3
         self.layer4 = ResNet.layer4
 
-        dummy_input = torch.randn(1, 3, input_image_size, input_image_size)
+        dummy_input = torch.randn(1, num_input_channels, self.input_image_size, self.input_image_size)
         x = self.layer1(dummy_input)
         x = self.layer2(x)
         x = self.layer3(x)
@@ -159,7 +158,7 @@ class ResNet_UNet(Module):
             Upsample(quarter_dim, eighth_dim, sixteenth_dim),
             Conv2d(sixteenth_dim, 1, kernel_size=2, padding=1),
             nn.Upsample(
-              size=(input_image_size, input_image_size),
+              size=(self.input_image_size, self.input_image_size),
               mode="bilinear",
               align_corners=False,
             ),
@@ -324,7 +323,7 @@ class LatentSpaceExtractor(Module):
         self.image_size = image_size
 
         # Build Drone Encoder
-        drone_ResNet_UNet = ResNet_UNet(ResNet=drone_resnet, image_size=image_size)
+        drone_ResNet_UNet = ResNet_UNet(ResNet=drone_resnet, image_size=image_size, num_input_channels=3)
         self.drone_layer1 = drone_ResNet_UNet.layer1
         self.drone_layer2 = drone_ResNet_UNet.layer2
         self.drone_layer3 = drone_ResNet_UNet.layer3
@@ -334,9 +333,9 @@ class LatentSpaceExtractor(Module):
 
         # Build Satellite Encoder
         if satellite_resnet is None:
-            sat_ResNet_UNet = ResNet_UNet(resnet18(weights=get_weight("ResNet18_Weights.SENTINEL2_ALL_MOCO")), image_size=image_size)
+            sat_ResNet_UNet = ResNet_UNet(resnet18(weights=get_weight("ResNet18_Weights.SENTINEL2_ALL_MOCO")), image_size=image_size, num_input_channels=13)
         else:
-            sat_ResNet_UNet = ResNet_UNet(ResNet=satellite_resnet, image_size=image_size)
+            sat_ResNet_UNet = ResNet_UNet(ResNet=satellite_resnet, image_size=image_size, num_input_channels=13)
         
         self.sat_layer1 = sat_ResNet_UNet.layer1
         self.sat_layer2 = sat_ResNet_UNet.layer2
@@ -361,6 +360,7 @@ class LatentSpaceExtractor(Module):
             x2 = self.drone_layer2(x1)
             x3 = self.drone_layer3(x2)
             x4 = self.drone_layer4(x3)
+            x4 = self.drone_center(x4)
             return x4
         elif image.shape[1] == 13:
             # Satellite image
