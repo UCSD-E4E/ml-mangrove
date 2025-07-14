@@ -140,6 +140,9 @@ class Runner(object):
             train_dataset: Training dataset.
             val_dataset: Validation dataset.
         """
+        train_loss = [] # store avg loss per iteration
+        evaluate_loss = [] # store (iteration, avg loss) only when eval occurs
+
         optimizer, sched = build_optimizer_sched(opt, self.net)
         train_loader = util.setup_loader(train_dataset, opt.microbatch)
         val_loader = util.setup_loader(val_dataset, opt.microbatch)
@@ -147,8 +150,9 @@ class Runner(object):
         self.net.train()
         n_inner_loop = opt.batch_size // (opt.global_size * opt.microbatch)
         for iteration in range(opt.num_itr):
+            total_train_loss = 0
             optimizer.zero_grad()
-            print_metrics = (iteration < 50)or (iteration % 1000 == 0)
+            print_metrics = (iteration < 50) or (iteration % 50 == 0)
             for _ in tqdm(range(n_inner_loop), desc="n_inner_loop", disable=not print_metrics):
                 # sample from boundary pair
                 x0, x1 = self.sample_batch(opt, train_loader)
@@ -164,6 +168,10 @@ class Runner(object):
                 #   print("label shape", label.shape)
                 loss = F.mse_loss(pred, label)
                 loss.backward()
+                total_train_loss += loss.item()
+
+            avg_train_loss = total_train_loss / n_inner_loop
+            train_loss.append(avg_train_loss)
 
             optimizer.step()
             self.ema.update()
@@ -176,7 +184,7 @@ class Runner(object):
                   1 + iteration,
                   opt.num_itr,
                   "{:.2e}".format(optimizer.param_groups[0]['lr']),
-                  "{:+.4f}".format(loss.item()),
+                  "{:+.4f}".format(avg_train_loss),
               ))
             if iteration % 5000 == 0:
                 torch.save({
@@ -187,13 +195,16 @@ class Runner(object):
                 }, opt.ckpt_path / "latest.pt")
                 print(f"Saved latest({iteration=}) checkpoint to {opt.ckpt_path=}!")
 
-            if iteration == 500 or iteration % 3000 == 0:  # 0, 0.5k, 3k, 6k, 9k
+            if iteration % 20 == 0:  # 0, 0.5k, 3k, 6k, 9k
                 self.net.eval()
-                self.evaluation(opt, iteration, val_loader)
+                # self.evaluation(opt, iteration, val_loader)
+                eval_loss = self.evaluation2(opt, iteration, val_loader)
+                evaluate_loss.append((iteration, eval_loss))
                 self.net.train()
+        return train_loss, evaluate_loss
 
     @torch.no_grad()
-    def evaluation(self, opt, it, val_loader):
+    def evaluation(self, opt, it, val_loader): # evaluation of xs and pred_x0s with ddpm sampling
         """
         Evaluates the network on the validation dataset.
 
@@ -231,6 +242,31 @@ class Runner(object):
 
         print(f"========== Evaluation finished ==========")
         torch.cuda.empty_cache()
+
+    @torch.no_grad()
+    def evaluation2(self, opt, it, val_loader): # evaluation of self.net with loss calculation
+        print(f"========== Evaluation started: iter={it} ==========")
+        
+        high_res_image, low_res_image = self.sample_batch(opt, val_loader)
+        x0 = high_res_image.to(opt.device)
+        x1 = low_res_image.to(opt.device)
+        step = torch.randint(0, opt.interval, (x0.shape[0],)).to(opt.device) 
+        xt = self.diffusion.q_sample(step, x0, x1, ot_ode=opt.ot_ode).to(opt.device) # intermediate noisy image
+
+        # predict diffusion step
+        pred = self.net(xt, diffuse=True, return_encoding_only=True, step=step, latent_input=True) # predicted noise
+        label = self.compute_label(step, x0, xt) # ground truth noise
+
+        loss = F.mse_loss(pred, label)
+        print("eval_it {}/{} | loss:{}".format(
+                  1 + it,
+                  opt.num_itr,
+                  "{:+.4f}".format(loss),
+              ))
+
+        print(f"========== Evaluation finished ==========")
+        torch.cuda.empty_cache()
+        return loss
     
     def compute_label(self, step: int, x0: torch.Tensor, xt: torch.Tensor) -> torch.Tensor:
         """
