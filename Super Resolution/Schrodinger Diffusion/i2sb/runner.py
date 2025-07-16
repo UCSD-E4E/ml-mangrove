@@ -7,6 +7,7 @@ import torch
 import torch.nn.functional as F
 from torch.optim import AdamW, lr_scheduler
 from torch_ema import ExponentialMovingAverage
+from torch.utils.data import DataLoader
 import torchvision.utils as tu
 from models.models import ResNet_UNet_Diffusion, ResNet_UNet
 from . import util
@@ -152,8 +153,8 @@ class Runner(object):
         for iteration in range(opt.num_itr):
             total_train_loss = 0
             optimizer.zero_grad()
-            print_metrics = (iteration < 50) or (iteration % 50 == 0)
-            for _ in tqdm(range(n_inner_loop), desc="n_inner_loop", disable=not print_metrics):
+            print_metrics = (iteration < 10) or (iteration % 50 == 0)
+            for _ in tqdm(range(n_inner_loop), desc="train_inner_loop", disable=not print_metrics):
                 # sample from boundary pair
                 x0, x1 = self.sample_batch(opt, train_loader)
                 step = torch.randint(0, opt.interval, (x0.shape[0],)).to(opt.device) 
@@ -162,7 +163,6 @@ class Runner(object):
                 # predict diffusion step
                 pred = self.net(xt, diffuse=True, return_encoding_only=True, step=step, latent_input=True) # predicted noise
                 label = self.compute_label(step, x0, xt) # ground truth noise
-                # label = self.net(label, diffuse=True, return_encoding_only=True, step=step, latent_input=True)
                 # if iteration == 0:
                 #   print("pred shape", pred.shape)
                 #   print("label shape", label.shape)
@@ -186,7 +186,7 @@ class Runner(object):
                   "{:.2e}".format(optimizer.param_groups[0]['lr']),
                   "{:+.4f}".format(avg_train_loss),
               ))
-            if iteration % 5000 == 0:
+            if iteration % 1000 == 0:
                 torch.save({
                     "net": self.net.state_dict(),
                     "ema": self.ema.state_dict(),
@@ -195,78 +195,45 @@ class Runner(object):
                 }, opt.ckpt_path / "latest.pt")
                 print(f"Saved latest({iteration=}) checkpoint to {opt.ckpt_path=}!")
 
-            if iteration % 20 == 0:  # 0, 0.5k, 3k, 6k, 9k
+            if iteration % 50 == 0:  # 0, 0.5k, 3k, 6k, 9k
                 self.net.eval()
-                # self.evaluation(opt, iteration, val_loader)
-                eval_loss = self.evaluation2(opt, iteration, val_loader)
+                eval_loss = self.evaluation(opt, iteration, val_loader)
                 evaluate_loss.append((iteration, eval_loss))
                 self.net.train()
+
+        train_loader.close()
+        val_loader.close()
+
         return train_loss, evaluate_loss
 
     @torch.no_grad()
-    def evaluation(self, opt, it, val_loader): # evaluation of xs and pred_x0s with ddpm sampling
-        """
-        Evaluates the network on the validation dataset.
-
-        Args:
-            opt: Configuration options.
-            it (int): Current iteration.
-            val_loader: Validation data loader.
-        """
-        print(f"========== Evaluation started: iter={it} ==========")
+    def evaluation(self, opt, it, val_loader): # evaluation of self.net with loss calculation
+        total_eval_loss = 0
         
-        high_res_image, low_res_image = self.sample_batch(opt, val_loader)
-        x1 = low_res_image.to(opt.device)
-        xs, pred_x0s = self.ddpm_sampling(opt, x1, clip_denoise=opt.clip_denoise)
+        n_inner_loop = opt.batch_size // (opt.global_size * opt.microbatch)
+        for _ in tqdm(range(n_inner_loop), desc="eval_inner_loop"):
+            high_res_image, low_res_image = self.sample_batch(opt, val_loader)
+            x0 = high_res_image.to(opt.device)
+            x1 = low_res_image.to(opt.device)
+            step = torch.randint(0, opt.interval, (x0.shape[0],)).to(opt.device) 
+            xt = self.diffusion.q_sample(step, x0, x1, ot_ode=opt.ot_ode).to(opt.device) # intermediate noisy image
 
-        # Gather images
-        high_res_image.detach().cpu()
-        low_res_image.detach().cpu()
-        xs.detach().cpu()
-        pred_x0s.detach().cpu()
+            # predict diffusion step
+            pred = self.net(xt, diffuse=True, return_encoding_only=True, step=step, latent_input=True) # predicted noise
+            label = self.compute_label(step, x0, xt) # ground truth noise
 
-        batch, len_t, *xdim = xs.shape
-        assert high_res_image.shape == low_res_image.shape == (batch, *xdim)
-        assert xs.shape == pred_x0s.shape
-        
-        def log_image(tag, img, nrow=10):
-            self.writer.add_image(it, tag, tu.make_grid((img + 1) / 2, nrow=nrow))  # [1,1] -> [0,1]
-
-        # Log images
-        img_recon = xs[:, 0, ...]
-        log_image("image/high_resolution", high_res_image)
-        log_image("image/low_resolution", low_res_image)
-        log_image("image/recon", img_recon)
-        log_image("debug/pred_clean_traj", pred_x0s.reshape(-1, *xdim), nrow=len_t)
-        log_image("debug/recon_traj", xs.reshape(-1, *xdim), nrow=len_t)
-
-        print(f"========== Evaluation finished ==========")
-        torch.cuda.empty_cache()
-
-    @torch.no_grad()
-    def evaluation2(self, opt, it, val_loader): # evaluation of self.net with loss calculation
-        print(f"========== Evaluation started: iter={it} ==========")
-        
-        high_res_image, low_res_image = self.sample_batch(opt, val_loader)
-        x0 = high_res_image.to(opt.device)
-        x1 = low_res_image.to(opt.device)
-        step = torch.randint(0, opt.interval, (x0.shape[0],)).to(opt.device) 
-        xt = self.diffusion.q_sample(step, x0, x1, ot_ode=opt.ot_ode).to(opt.device) # intermediate noisy image
-
-        # predict diffusion step
-        pred = self.net(xt, diffuse=True, return_encoding_only=True, step=step, latent_input=True) # predicted noise
-        label = self.compute_label(step, x0, xt) # ground truth noise
-
-        loss = F.mse_loss(pred, label)
-        print("eval_it {}/{} | loss:{}".format(
+            loss = F.mse_loss(pred, label)
+            total_eval_loss += loss.item()
+          
+        avg_eval_loss = total_eval_loss / n_inner_loop
+        print("EVALUATE: eval_it {}/{} | loss:{}".format(
                   1 + it,
                   opt.num_itr,
-                  "{:+.4f}".format(loss),
+                  "{:+.4f}".format(avg_eval_loss),
               ))
 
-        print(f"========== Evaluation finished ==========")
         torch.cuda.empty_cache()
-        return loss
+        return avg_eval_loss
     
     def compute_label(self, step: int, x0: torch.Tensor, xt: torch.Tensor) -> torch.Tensor:
         """
