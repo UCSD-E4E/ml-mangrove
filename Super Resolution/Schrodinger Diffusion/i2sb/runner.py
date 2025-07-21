@@ -39,10 +39,12 @@ def build_optimizer_sched(opt, net):
         checkpoint = torch.load(opt.load, map_location="cpu")
         if "optimizer" in checkpoint.keys():
             optimizer.load_state_dict(checkpoint["optimizer"])
+            print("Loaded 'optimizer' from checkpoint path")
         else:
             print(f"[Opt] Ckpt {opt.load} has no optimizer!")
         if sched is not None and "sched" in checkpoint.keys() and checkpoint["sched"] is not None:
             sched.load_state_dict(checkpoint["sched"])
+            print("Loaded 'sched' from checkpoint path")
         else:
             print(f"[Opt] Ckpt {opt.load} has no lr sched!")
 
@@ -123,15 +125,20 @@ class Runner(object):
         unet = ResNet_UNet()
         # change 1: if opt.unet_path: unet = unet.load_state_dict(torch.load(opt.unet_path)) 
         self.net = ResNet_UNet_Diffusion(unet=unet, num_timesteps=len(betas))
+        # print("conv1 weight shape:", self.net.layer1[0].weight.shape)
+        # print("betas length:", len(betas))
+
         self.ema = ExponentialMovingAverage(self.net.parameters(), decay=opt.ema)
         if opt.load:
             checkpoint = torch.load(opt.load, map_location="cpu")
             self.net.load_state_dict(checkpoint['net'])
             self.ema.load_state_dict(checkpoint["ema"])
+            print("Loaded 'net' and 'ema' from checkpoint path")
         self.net.to(opt.device)
         self.ema.to(opt.device)
         print(f"Built {opt.diffusion_type} Diffusion Model with {len(betas)} steps and {opt.beta_schedule} beta schedule!")
     
+    # train using algorithm 1 described in paper
     def train(self, opt, train_dataset, val_dataset):
         """
         Trains the network using the specified datasets.
@@ -180,25 +187,32 @@ class Runner(object):
 
             # -------- logging --------
             if print_metrics:
-              print("train_it {}/{} | lr:{} | loss:{}".format(
+              print("train_it {}/{} | lr:{} | noise_prediction_loss:{}".format(
                   1 + iteration,
                   opt.num_itr,
                   "{:.2e}".format(optimizer.param_groups[0]['lr']),
                   "{:+.4f}".format(avg_train_loss),
               ))
-            if iteration % 1000 == 0:
+            if iteration % 1000 == 0 or iteration == opt.num_itr - 1:
+                ckpt_name = f"model_{iteration:06d}.pt"
+                ckpt_path = opt.ckpt_path / ckpt_name
                 torch.save({
                     "net": self.net.state_dict(),
                     "ema": self.ema.state_dict(),
                     "optimizer": optimizer.state_dict(),
                     "sched": sched.state_dict() if sched is not None else sched,
-                }, opt.ckpt_path / "latest.pt")
-                print(f"Saved latest({iteration=}) checkpoint to {opt.ckpt_path=}!")
+                }, ckpt_path)
 
-            if iteration % 50 == 0:  # 0, 0.5k, 3k, 6k, 9k
+                train_loss_path = opt.ckpt_path / "train_losses.npy"
+                eval_metrics_path = opt.ckpt_path / "eval_losses.npy"
+                np.save(train_loss_path, np.array(train_loss, dtype=np.float32))
+                np.save(eval_metrics_path, np.array(evaluate_loss, dtype=np.float32))
+                print(f"Saved weights and losses on iteration {iteration}")
+
+            if iteration % 200 == 0:  # 0, 0.5k, 3k, 6k, 9k
                 self.net.eval()
-                eval_loss = self.evaluation(opt, iteration, val_loader)
-                evaluate_loss.append((iteration, eval_loss))
+                avg_noise_prediction_loss, avg_reconstruction_loss = self.evaluation(opt, iteration, val_loader)
+                evaluate_loss.append((iteration, avg_noise_prediction_loss, avg_reconstruction_loss))
                 self.net.train()
 
         train_loader.close()
@@ -206,34 +220,43 @@ class Runner(object):
 
         return train_loss, evaluate_loss
 
+    # evaluate on both algorithm 1 and algorithm 2 described in paper
     @torch.no_grad()
     def evaluation(self, opt, it, val_loader): # evaluation of self.net with loss calculation
-        total_eval_loss = 0
-        
+        total_noise_prediction_loss = 0
+        total_reconstruction_loss = 0
         n_inner_loop = opt.batch_size // (opt.global_size * opt.microbatch)
+
         for _ in tqdm(range(n_inner_loop), desc="eval_inner_loop"):
             high_res_image, low_res_image = self.sample_batch(opt, val_loader)
             x0 = high_res_image.to(opt.device)
             x1 = low_res_image.to(opt.device)
+
+            # evaluate model noise prediction
             step = torch.randint(0, opt.interval, (x0.shape[0],)).to(opt.device) 
             xt = self.diffusion.q_sample(step, x0, x1, ot_ode=opt.ot_ode).to(opt.device) # intermediate noisy image
+            pred_noise = self.net(xt, diffuse=True, return_encoding_only=True, step=step, latent_input=True) # predicted noise
+            label_noise = self.compute_label(step, x0, xt) # ground truth noise
+            noise_prediction_loss = F.mse_loss(pred_noise, label_noise)
+            total_noise_prediction_loss += noise_prediction_loss.item()
 
-            # predict diffusion step
-            pred = self.net(xt, diffuse=True, return_encoding_only=True, step=step, latent_input=True) # predicted noise
-            label = self.compute_label(step, x0, xt) # ground truth noise
-
-            loss = F.mse_loss(pred, label)
-            total_eval_loss += loss.item()
+            # evaluate reconstruction with ddpm
+            xs, pred_x0s = self.ddpm_sampling(opt, x1, clip_denoise=opt.clip_denoise, verbose=False)
+            x0_hat = pred_x0s[:, 0].to(opt.device)
+            reconstrution_loss = F.mse_loss(x0_hat, x0)
+            total_reconstruction_loss += reconstrution_loss.item()
           
-        avg_eval_loss = total_eval_loss / n_inner_loop
-        print("EVALUATE: eval_it {}/{} | loss:{}".format(
+        avg_noise_prediction_loss = total_noise_prediction_loss / n_inner_loop
+        avg_reconstruction_loss = total_reconstruction_loss / n_inner_loop
+        print("EVALUATE: eval_it {}/{} | noise_prediction_loss:{} | reconstruction_loss:{}".format(
                   1 + it,
                   opt.num_itr,
-                  "{:+.4f}".format(avg_eval_loss),
+                  "{:+.4f}".format(avg_noise_prediction_loss),
+                  "{:+.4f}".format(avg_reconstruction_loss),
               ))
 
         torch.cuda.empty_cache()
-        return avg_eval_loss
+        return avg_noise_prediction_loss, avg_reconstruction_loss
     
     def compute_label(self, step: int, x0: torch.Tensor, xt: torch.Tensor) -> torch.Tensor:
         """
@@ -324,7 +347,7 @@ class Runner(object):
         log_count = min(len(steps) - 1, log_count)
         log_steps = [steps[i] for i in util.space_indices(len(steps) - 1, log_count)]
         assert log_steps[0] == 0
-        # self.log.info(f"[DDPM Sampling] steps={opt.interval}, {nfe=}, {log_steps=}!")
+        # print(f"log_steps for ddpm_sampling: {log_steps}")
 
         x1 = x1.to(opt.device)
         if cond is not None:
