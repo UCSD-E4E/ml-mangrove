@@ -1,3 +1,4 @@
+import gc
 import rasterio
 import os
 import shutil
@@ -98,6 +99,10 @@ def align_shapefiles(output_root,
                     # Save result
                     out_gdf = gpd.GeoDataFrame(cleaned, crs=crs)
                     out_gdf.to_file(output_shapefile_path)
+
+                    del gdf
+                    del out_gdf
+                    gc.collect()
         
         # Move original labels to backup directory
         if has_labels: 
@@ -160,6 +165,13 @@ def resample_tiff(input_root, output_root, target_resolution, align_shapefile=Tr
                                 dst_crs=dst_crs,
                                 resampling=resampling
                             )
+
+                del src
+                del dst
+                gc.collect()
+
+                print(f"Resampled {tiff_path} to {output_tiff_path}")
+
                 # Copy labels if present
                 labels_dir = os.path.join(root, "labels")
                 if os.path.exists(labels_dir):
@@ -174,8 +186,8 @@ def resample_tiff(input_root, output_root, target_resolution, align_shapefile=Tr
         align_shapefiles(output_root)
 
 def __main__():
-    input_root = "unscaled_drone"
-    output_root = "one_meter_drone"
+    input_root = "C:\\Users\\gwrye\\OneDrive\\Desktop\\unscaled_drone_data"
+    output_root = "C:\\Users\\gwrye\\OneDrive\\Desktop\\one_meter_drone_data_test"
     target_resolution = 1.0 # Resolution in meters
     resample_tiff(input_root, output_root, target_resolution, align_shapefile=True)
 
