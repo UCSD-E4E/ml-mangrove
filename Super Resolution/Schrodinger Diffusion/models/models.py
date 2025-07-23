@@ -27,10 +27,10 @@ torchgeo.models.get_weight("ResNet50_Weights.SENTINEL2_ALL_MOCO")
                                                                    
 """       
 class ResNet_UNet_Diffusion(Module):
-    def __init__(self, num_timesteps=100, image_size=224, opt=None, unet=None):
+    def __init__(self, num_timesteps=1000, image_size=224, opt=None, unet=None):
         super(ResNet_UNet_Diffusion, self).__init__()
         if unet is None:
-            unet = ResNet_UNet(ResNet = resnet18(weights=get_weight("ResNet18_Weights.SENTINEL2_ALL_MOCO")), input_image_size=image_size)
+            unet = ResNet_UNet(ResNet = resnet18(weights=get_weight("ResNet18_Weights.SENTINEL2_ALL_MOCO")), image_size=image_size, num_input_channels=13)
         self.opt = opt
         self.input_image_size = unet.input_image_size
         self.num_timesteps = num_timesteps
@@ -38,6 +38,7 @@ class ResNet_UNet_Diffusion(Module):
 
         # Inherit encoder and decoder layers from ResNet UNet
         self.layer1 = unet.layer1
+        # print("conv1 weight shape:", self.layer1[0].weight.shape)
         self.layer2 = unet.layer2
         self.layer3 = unet.layer3
         self.layer4 = unet.layer4
@@ -90,7 +91,9 @@ class ResNet_UNet_Diffusion(Module):
                 x = self.diffuser(x, step)
             else:
                 for i in range(1, self.num_timesteps + 1):
-                    time_step = torch.tensor([i], dtype=torch.float32)
+                    # instead of having time_step be a [1] length array of i, we might want it to be a [B] length array of i
+                    # time_step = x.new_full((x.size(0),), fill_value=float(i))
+                    time_step = torch.tensor([i], dtype=torch.float32, device=x.device)
                     x = self.diffuser(x, time_step)
         
         if return_encoding_only:
@@ -113,7 +116,9 @@ class ResNet_UNet(Module):
         super(ResNet_UNet, self).__init__()
         self.input_image_size= image_size
         if ResNet is None:
-            ResNet = resnet18(pretrained=True)
+            ResNet = resnet18(
+                weights=get_weight("ResNet18_Weights.SENTINEL2_RGB_SECO")
+            )
         
         for param in ResNet.parameters():
             param.requires_grad = False
@@ -129,7 +134,7 @@ class ResNet_UNet(Module):
         self.layer3 = ResNet.layer3
         self.layer4 = ResNet.layer4
 
-        dummy_input = torch.randn(1, num_input_channels, self.input_image_size, self.input_image_size)
+        dummy_input = torch.randn(1, 3, self.input_image_size, self.input_image_size)
         x = self.layer1(dummy_input)
         x = self.layer2(x)
         x = self.layer3(x)
