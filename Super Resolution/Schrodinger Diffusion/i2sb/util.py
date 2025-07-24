@@ -17,12 +17,12 @@ class DataLoaderX(DataLoader):
     def __iter__(self):
         return BackgroundGenerator(super().__iter__())
 
-def setup_loader(dataset, batch_size, num_workers=4):
+def setup_loader(dataset, batch_size, num_workers=0):
     loader = DataLoaderX(
         dataset,
         batch_size=batch_size,
         shuffle=True,
-        pin_memory=True,
+        pin_memory=False,
         num_workers=num_workers,
         drop_last=True,
     )

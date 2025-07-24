@@ -8,6 +8,7 @@ import torch.nn.functional as F
 from torch.optim import AdamW, lr_scheduler
 from torch_ema import ExponentialMovingAverage
 from torch.utils.data import DataLoader
+from torchgeo.models import resnet18, get_weight
 import torchvision.utils as tu
 from models.models import ResNet_UNet_Diffusion, ResNet_UNet
 from . import util
@@ -122,9 +123,9 @@ class Runner(object):
         self.noise_levels = torch.linspace(opt.t0, opt.T, opt.interval, device=opt.device) * opt.interval
 
         # Build Model
-        unet = ResNet_UNet()
+        unet = ResNet_UNet(ResNet = resnet18(weights=get_weight("ResNet18_Weights.SENTINEL2_ALL_MOCO")), image_size=224, num_input_channels=13)
         # change 1: if opt.unet_path: unet = unet.load_state_dict(torch.load(opt.unet_path)) 
-        self.net = ResNet_UNet_Diffusion(unet=unet, num_timesteps=len(betas))
+        self.net = ResNet_UNet_Diffusion(unet=unet, num_timesteps=len(betas), num_input_channels=13)
         # print("conv1 weight shape:", self.net.layer1[0].weight.shape)
         # print("betas length:", len(betas))
 
@@ -151,7 +152,7 @@ class Runner(object):
         train_loss = [] # store avg loss per iteration
         evaluate_loss = [] # store (iteration, avg loss) only when eval occurs
 
-        optimizer, sched = build_optimizer_sched(opt, self.net)
+        optimizer, sched = build_optimizer_sched(opt, self.net) 
         train_loader = util.setup_loader(train_dataset, opt.microbatch)
         val_loader = util.setup_loader(val_dataset, opt.microbatch)
 
@@ -178,6 +179,97 @@ class Runner(object):
                 total_train_loss += loss.item()
 
             avg_train_loss = total_train_loss / n_inner_loop
+            train_loss.append(avg_train_loss)
+
+            optimizer.step()
+            self.ema.update()
+            if sched is not None:
+                sched.step()
+
+            # -------- logging --------
+            if print_metrics:
+              print("train_it {}/{} | lr:{} | noise_prediction_loss:{}".format(
+                  1 + iteration,
+                  opt.num_itr,
+                  "{:.2e}".format(optimizer.param_groups[0]['lr']),
+                  "{:+.4f}".format(avg_train_loss),
+              ))
+            if iteration % 1000 == 0 or iteration == opt.num_itr - 1:
+                ckpt_name = f"model_{iteration:06d}.pt"
+                ckpt_path = opt.ckpt_path / ckpt_name
+                torch.save({
+                    "net": self.net.state_dict(),
+                    "ema": self.ema.state_dict(),
+                    "optimizer": optimizer.state_dict(),
+                    "sched": sched.state_dict() if sched is not None else sched,
+                }, ckpt_path)
+
+                train_loss_path = opt.ckpt_path / "train_losses.npy"
+                eval_metrics_path = opt.ckpt_path / "eval_losses.npy"
+                np.save(train_loss_path, np.array(train_loss, dtype=np.float32))
+                np.save(eval_metrics_path, np.array(evaluate_loss, dtype=np.float32))
+                print(f"Saved weights and losses on iteration {iteration}")
+
+            if iteration % 200 == 0:  # 0, 0.5k, 3k, 6k, 9k
+                self.net.eval()
+                avg_noise_prediction_loss, avg_reconstruction_loss = self.evaluation(opt, iteration, val_loader)
+                evaluate_loss.append((iteration, avg_noise_prediction_loss, avg_reconstruction_loss))
+                self.net.train()
+
+        train_loader.close()
+        val_loader.close()
+
+        return train_loss, evaluate_loss
+    
+  
+    # train using algorithm 1 described in paper
+    def train2(self, opt, train_dataset, val_dataset):
+        """
+        Trains the network using the specified datasets.
+
+        Args:
+            opt: Configuration options.
+            train_dataset: Training dataset.
+            val_dataset: Validation dataset.
+        """
+        train_loss = [] # store avg loss per iteration
+        evaluate_loss = [] # store (iteration, avg loss) only when eval occurs
+
+        optimizer, sched = build_optimizer_sched(opt, self.net)
+        
+        train_loader = DataLoader(train_dataset, batch_size=opt.batch_size, shuffle=True, drop_last=True, num_workers=1, pin_memory=False)
+        train_batch_iter = iter(train_loader)
+        #val_loader = DataLoader(val_dataset, batch_size=opt.batch_size, shuffle=True, drop_last=True, num_workers=1, pin_memory=False)
+        val_loader = util.setup_loader(val_dataset, opt.microbatch)
+
+        self.net.train()
+        for iteration in range(opt.num_itr):
+            total_train_loss = 0
+            optimizer.zero_grad()
+            print_metrics = (iteration < 10) or (iteration % 50 == 0)
+            
+            try:
+                lr_latent, hr_latent = next(train_batch_iter)
+            except StopIteration:
+                train_batch_iter = iter(train_loader)
+                lr_latent, hr_latent = next(train_batch_iter)
+
+            # sample from boundary pair
+            x0, x1 = hr_latent.to(opt.device), lr_latent.to(opt.device)
+            step = torch.randint(0, opt.interval, (x0.shape[0],)).to(opt.device) 
+            xt = self.diffusion.q_sample(step, x0, x1, ot_ode=opt.ot_ode).to(opt.device) # intermediate noisy image
+
+            # predict diffusion step
+            pred = self.net(xt, diffuse=True, return_encoding_only=True, step=step, latent_input=True) # predicted noise
+            label = self.compute_label(step, x0, xt) # ground truth noise
+            # if iteration == 0:
+            #   print("pred shape", pred.shape)
+            #   print("label shape", label.shape)
+            loss = F.mse_loss(pred, label)
+            loss.backward()
+            total_train_loss += loss.item()
+
+            avg_train_loss = total_train_loss
             train_loss.append(avg_train_loss)
 
             optimizer.step()

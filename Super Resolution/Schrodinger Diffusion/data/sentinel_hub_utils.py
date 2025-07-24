@@ -13,8 +13,8 @@ import tempfile
 # Output: Satellite tif saved as satellite.tif
 def call_s2l2a_api(chunk_path):
   URL_REQUEST = "https://services.sentinel-hub.com/api/v1/process"
-  START_DATE = "2022-04-01"
-  END_DATE = "2022-07-31"
+  START_DATE = "2022-03-01"
+  END_DATE = "2022-05-30"
 
   name = chunk_path.split('/')[-1]
     
