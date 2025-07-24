@@ -186,8 +186,8 @@ def resample_tiff(input_root, output_root, target_resolution, align_shapefile=Tr
         align_shapefiles(output_root)
 
 def __main__():
-    input_root = "C:\\Users\\gwrye\\OneDrive\\Desktop\\unscaled_drone_data"
-    output_root = "C:\\Users\\gwrye\\OneDrive\\Desktop\\one_meter_drone_data_test"
+    input_root = "/Volumes/mangrove/Machine Learning Datasets/Original Drone Data/2018.07 PSC"
+    output_root = "/Volumes/mangrove/Machine Learning Datasets/1m Scaled Drone Data/2018.07 PSC"
     target_resolution = 1.0 # Resolution in meters
     resample_tiff(input_root, output_root, target_resolution, align_shapefile=True)
 

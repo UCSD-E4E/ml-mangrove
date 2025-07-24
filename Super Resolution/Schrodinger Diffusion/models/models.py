@@ -26,15 +26,96 @@ torchgeo.models.get_weight("ResNet50_Weights.SENTINEL2_ALL_MOCO")
   \_____| |_|  \__,_| |___/ |___/ |_| |_|   |_|  \___| |_|    |___/
                                                                    
 """       
+
+
+class ResNet_FC_Diffusion(Module):
+    def __init__(self, num_timesteps=100, image_size=224, opt=None, resnet=None, num_classes=1, num_input_channels=13):
+        super(ResNet_FC_Diffusion, self).__init__()
+
+        self.opt = opt
+        self.num_timesteps = num_timesteps
+        self.image_size = image_size
+        self.num_classes = num_classes
+
+        if resnet is None:
+            resnet = resnet18(weights=get_weight("ResNet18_Weights.SENTINEL2_ALL_MOCO"), input_image_size=image_size)
+
+        self.encoder = nn.Sequential(
+            resnet.conv1,
+            resnet.bn1,
+            nn.ReLU(),
+            resnet.maxpool,
+            resnet.layer1,
+            resnet.layer2,
+            resnet.layer3,
+            resnet.layer4
+        )
+
+        for param in self.encoder.parameters():
+            param.requires_grad = False
+
+        # Infer latent space dimensions
+        dummy_input = torch.randn(1, num_input_channels, self.image_size, self.image_size)
+        with torch.no_grad():
+            dummy_output = self.encoder(dummy_input)
+        output_channels = dummy_output.shape[1]
+
+        # Diffusion Pipeline
+        self.diffuser = DiffusionLayer(output_channels, 64)
+
+        # Fully Connected Layer
+        self.decoder = nn.Linear(output_channels, image_size*image_size*num_classes)
+
+    def forward(self, image: torch.tensor, diffuse: bool = True, return_encoding_only: bool = False, step: int = None, latent_input: bool = False):
+        """
+        Forward pass for the ResNet FC diffusion model.
+        
+        Args:
+            image (torch.Tensor): Input tensor.
+            diffuse (bool, optional): If True, then diffusion will be applied.
+            return_encoding_only (bool, optional): Return only the latent encoding. Defaults to False.
+            step (int, optional): Current diffusion step. If None, all steps will be applied.
+            latent_input (bool, optional): If True, the input is already in the latent space. Defaults to False.
+        Returns:
+            torch.Tensor: Output tensor.
+        """
+
+        if latent_input:
+            x = image
+        else:
+            # Encode image
+            if len(image.shape) == 3:
+                image = image.unsqueeze(0)
+            x = self.encoder(image)
+
+        # Diffuse
+        if diffuse:
+            if step is not None:
+                x = self.diffuser(x, step)
+            else:
+                for i in range(1, self.num_timesteps + 1):
+                    time_step = torch.tensor([i], dtype=torch.float32)
+                    x = self.diffuser(x, time_step)
+        
+        if return_encoding_only:
+            return x
+        else:
+            # Flatten the output and pass through the fc layer
+            x = x.flatten(start_dim=1)
+            x = self.decoder(x)
+            x = x.view(-1, self.num_classes, self.image_size, self.image_size)
+            return x
+
+
 class ResNet_UNet_Diffusion(Module):
-    def __init__(self, num_timesteps=1000, image_size=224, opt=None, unet=None):
+    def __init__(self, num_timesteps=1000, image_size=224, opt=None, unet=None, num_input_channels=13):
         super(ResNet_UNet_Diffusion, self).__init__()
         if unet is None:
-            unet = ResNet_UNet(ResNet = resnet18(weights=get_weight("ResNet18_Weights.SENTINEL2_ALL_MOCO")), image_size=image_size, num_input_channels=13)
+            unet = ResNet_UNet(ResNet = resnet18(weights=get_weight("ResNet18_Weights.SENTINEL2_ALL_MOCO")), image_size=image_size, num_input_channels=num_input_channels)
         self.opt = opt
         self.input_image_size = unet.input_image_size
         self.num_timesteps = num_timesteps
-        self.image_size = image_size
+        # self.image_size = image_size
 
         # Inherit encoder and decoder layers from ResNet UNet
         self.layer1 = unet.layer1
@@ -51,7 +132,7 @@ class ResNet_UNet_Diffusion(Module):
         self.classification_head = unet.classification_head
 
         # Infer latent space dimensions
-        dummy_input = torch.randn(1, 3, self.input_image_size, self.input_image_size)
+        dummy_input = torch.randn(1, num_input_channels, self.input_image_size, self.input_image_size)
         with torch.no_grad():
             dummy_output = self.center(self.layer4(self.layer3(self.layer2(self.layer1(dummy_input)))))
         output_channels = dummy_output.shape[1]
@@ -117,7 +198,7 @@ class ResNet_UNet(Module):
         self.input_image_size= image_size
         if ResNet is None:
             ResNet = resnet18(
-                weights=get_weight("ResNet18_Weights.SENTINEL2_RGB_SECO")
+                weights=get_weight("ResNet18_Weights.SENTINEL2_RGB_MOCO")
             )
         
         for param in ResNet.parameters():
@@ -134,7 +215,7 @@ class ResNet_UNet(Module):
         self.layer3 = ResNet.layer3
         self.layer4 = ResNet.layer4
 
-        dummy_input = torch.randn(1, 3, self.input_image_size, self.input_image_size)
+        dummy_input = torch.randn(1, num_input_channels, self.input_image_size, self.input_image_size)
         x = self.layer1(dummy_input)
         x = self.layer2(x)
         x = self.layer3(x)
@@ -174,6 +255,8 @@ class ResNet_UNet(Module):
         if len(image.shape) == 3:
             image = image.unsqueeze(0)
         image = image[:, :3, :, :]
+
+        # print(f"forward pass of ResNet UNet. Image Channels: {image.shape[1]}")
 
         # Encode
         x1 = self.layer1(image)
