@@ -14,9 +14,6 @@ Pretrained model Weights from SSL4EO-12 dataset
 Imported using torchgeo
 @ https://torchgeo.readthedocs.io/en/stable/api/models.html
 
-SWIN high resolution aerial imagery model from Satlas
-@ https://github.com/allenai/satlas
-
 New weights can be imported from torchgeo using:
 torchgeo.models.get_weight("ResNet50_Weights.SENTINEL2_ALL_MOCO")
 """
@@ -117,6 +114,67 @@ class ResNet_UNet(Module):
 
         return x
 
+
+class ResNet_UNet_NoSkip(Module):
+    """
+    ResNet UNet without any skip connections.
+    """
+    def __init__(self, ResNet : ResNet = resnet18(
+                weights=get_weight("ResNet18_Weights.SENTINEL2_RGB_MOCO")
+            ), num_classes=1, input_image_size=224):
+        super(ResNet_UNet_NoSkip, self).__init__()
+        self.num_classes = num_classes
+        self.input_image_size = input_image_size
+        
+        for param in ResNet.parameters():
+            param.requires_grad = False
+        
+        self.encoder = nn.Sequential(
+            ResNet.conv1,
+            ResNet.bn1,
+            nn.ReLU(),
+            ResNet.maxpool,
+            ResNet.layer1,
+            ResNet.layer2,
+            ResNet.layer3,
+            ResNet.layer4
+        )
+    
+        dummy_input = torch.randn(1, 3, input_image_size, input_image_size)
+        x = self.encoder(dummy_input)
+        
+        # Define feature dimensions
+        feature_dim = x.shape[1]
+        half_dim = feature_dim // 2
+        dim1 = feature_dim // 4
+        dim2 = feature_dim // 6
+        dim3 = feature_dim // 12
+        dim4 = feature_dim // 24
+        dim5 = feature_dim // 32
+        dim6 = feature_dim // 40
+
+        # Center
+        self.center = Decoder(feature_dim, int(feature_dim // 1.5), half_dim)
+
+        self.classification_head = nn.Sequential(
+            Decoder(half_dim, dim1, dim2),
+            Upsample(dim2, dim3, dim4),
+            Upsample(dim4, dim5, dim6),
+            Upsample(dim6, num_classes, num_classes),
+            nn.Upsample(
+              size=(input_image_size, input_image_size),
+              mode="bilinear",
+              align_corners=False,
+            ),
+            Conv2d(num_classes, num_classes, kernel_size=3, padding=1) # smooth output
+        )
+
+    def forward(self, image):
+        x = self.encoder(image)
+        x = self.center(x) 
+        x = self.classification_head(x)
+        return x
+    
 class DenseNet_UNet(Module):
     """
     - https://pytorch.org/vision/main/models/generated/torchvision.models.densenet121.html#torchvision.models.densenet121
