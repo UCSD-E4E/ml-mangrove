@@ -1,7 +1,32 @@
-from torch.utils.data import Dataset, Sampler, BatchSampler, DataLoader
+from torch.utils.data import Dataset
 import numpy as np
 from typing import Optional, List, Tuple
 import torch
+
+class SuperResolutionDataset(Dataset):
+    def __init__(self, hr_images, lr_images, transform=None):
+        self.hr_images = hr_images
+        self.lr_images = lr_images
+        self.transform = transform
+
+    def __len__(self):
+        return len(self.hr_images)
+
+    def __getitem__(self, idx):
+        hr_image = self.hr_images[idx]
+        lr_image = self.lr_images[idx]
+        if self.transform:
+            hr_image = self.transform(hr_image)
+            lr_image = self.transform(lr_image)
+        return lr_image, hr_image
+
+# Example usage
+# hr_images and lr_images should be lists of image paths or preloaded image arrays
+# hr_images = [...]  # Your high-resolution images
+# lr_images = [...]  # Your low-resolution images
+# dataset = SuperResolutionDataset(hr_images, lr_images, transform=ToTensor())
+# data_loader = DataLoader(dataset, batch_size=16, shuffle=True)
+
 
 class MemmapDataset(Dataset):
     def __init__(self, images: np.ndarray, labels: np.ndarray, validation_indices: Optional[Tuple] = None,):
@@ -79,54 +104,3 @@ class MemmapDataset(Dataset):
             validation_datasets.append(MemmapDataset(val_images, val_labels, validation_indices=(begin, end)))
         
         return validation_datasets
-
-
-def slice_collate_fn(batch):
-    """
-        Returns the slice as the batch.
-    """
-    return batch[0]
-
-class SliceSampler(Sampler):
-    """
-    Takes slices of the dataset to minimize overhead of accessing a memory mapped array.
-    Can optionally skip indices to allow for cross validation with memory mapping.
-    """
-    def __init__(self, dataset_len, batch_size, skip_indices: Optional[Tuple] = None):
-        self.dataset_len = dataset_len
-        self.batch_size = batch_size
-        self.start_skip = None
-        self.end_skip = None
-        if skip_indices:
-            self.start_skip = skip_indices[0]
-            self.end_skip = skip_indices[1]
-       
-
-    def __iter__(self):
-        for start_idx in range(0, self.dataset_len, self.batch_size):
-            end_idx = min(start_idx + self.batch_size, self.dataset_len)
-            
-            if self.start_skip is None:
-                yield slice(start_idx, end_idx)
-                continue
-            
-            # Check for any indices we want to skip
-            if start_idx >= self.start_skip and start_idx <= self.end_skip or end_idx >= self.start_skip and end_idx <= self.end_skip:
-                continue  # Skip this slice
-            
-            yield slice(start_idx, end_idx)
-
-    def __len__(self):
-        return (self.dataset_len + self.batch_size - 1) // self.batch_size  # number of batches
-    
-class SliceBatchSampler(BatchSampler):
-    """
-    Passes along the batch untouched.
-    """
-    def __init__(self, sampler, batch_size, drop_last):
-        super().__init__(sampler, batch_size, drop_last)
-    def __iter__(self):
-        for batch in super().__iter__():
-            yield batch
-    def __len__(self):
-        return super().__len__()
