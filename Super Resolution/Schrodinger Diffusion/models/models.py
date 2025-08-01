@@ -52,7 +52,7 @@ class Image2ImageDiffusion(Module):
             param.requires_grad = False
 
         # Infer latent space dimensions
-        dummy_input = torch.randn(1, 3, self.image_size, self.image_size)
+        dummy_input = torch.randn(1, 13, self.image_size, self.image_size)
         with torch.no_grad():
             dummy_output = self.encoder(dummy_input)
 
@@ -85,7 +85,7 @@ class Image2ImageDiffusion(Module):
         )
 
         # Diffusion Pipeline
-        self.diffuser = I2I_DiffusionLayer(4, 64)
+        self.diffuser = I2I_DiffusionLayer(224, 64)
     
     def forward(self, multispectral_image, step: Optional[int] = None):
         """
@@ -101,12 +101,16 @@ class Image2ImageDiffusion(Module):
         # If single image, unsqueeze to add batch dimension
         if len(multispectral_image.shape) == 3:
             multispectral_image = multispectral_image.unsqueeze(0)
+        # print(f"Image2ImageDiffusion. in multispectral_image.shape={multispectral_image.shape}")
+        # print(f"Image2ImageDiffusion. in step.shape={step.shape}")
 
         # Split the input into RGB and multispectral channels
         rgb_image = multispectral_image[:, :3, :, :]  # First 3 channels for RGB
+        # print(f"Image2ImageDiffusion. rgb_image.shape={rgb_image.shape}")
 
         # Encode Multispectral image
         multispectral_features = self.encoder(multispectral_image)
+        # print(f"Image2ImageDiffusion. multispectral_features.shape={multispectral_features.shape}")
         del multispectral_image
 
         # Diffuse
@@ -118,11 +122,15 @@ class Image2ImageDiffusion(Module):
                 multispectral_features = self.decoder(multispectral_features * gate.unsqueeze(2).unsqueeze(3))
                 rgb_image = self.diffuser(rgb_image, multispectral_features, time_step)
         else:
-            gate = self.gate_embedding(torch.tensor([step], dtype=torch.float32).to(rgb_image.device))
+            gate = self.gate_embedding(step.view(-1, 1)).to(rgb_image.device)
+            # print(f"Image2ImageDiffusion. gate.shape={gate.shape}")
             multispectral_features = self.decoder(multispectral_features * gate.unsqueeze(2).unsqueeze(3))
+            # print(f"Image2ImageDiffusion. multispectral_features.shape={multispectral_features.shape}")
             rgb_image = self.diffuser(rgb_image, multispectral_features, step)
+            # print(f"Image2ImageDiffusion. rgb_image.shape={rgb_image.shape}")
     
         return rgb_image
+
 
 
 class ResNet_UNet_Diffusion(Module):
@@ -276,6 +284,8 @@ class DiffusionLayer(nn.Module):
         self.diffusion_step = nn.Sequential(
             nn.Conv2d(latent_dim + time_embedding_dim, latent_dim, kernel_size=3, padding=1),
             nn.ReLU(),
+            nn.Conv2d(latent_dim, latent_dim, kernel_size=3, padding=1),
+            nn.ReLU(),
             nn.Conv2d(latent_dim, latent_dim, kernel_size=3, padding=1)
         )
 
@@ -298,6 +308,7 @@ class DiffusionLayer(nn.Module):
 class I2I_DiffusionLayer(nn.Module):
     def __init__(self, image_size, time_embedding_dim=64):
         super(I2I_DiffusionLayer, self).__init__()
+        self.image_size = image_size
         
         # Timestep embedding network
         self.timestep_embed = nn.Sequential(
@@ -321,15 +332,22 @@ class I2I_DiffusionLayer(nn.Module):
             t (torch.Tensor): Current timestep tensor (of shape [batch_size, 1]).
          """
         # Embed the timestep
-        t_emb = self.timestep_embed(t.view(-1, 1))
+        # print(f"I2I_DiffusionLayer. image.shape={image.shape} features.shape={features.shape} t.shape={t.shape}")
+        t_emb = self.timestep_embed(t.view(-1, 1).float())
+        # print(f"I2I_DiffusionLayer. t_emb.shape={t_emb.shape}")
         t_emb = t_emb.view(-1, 1, self.image_size, self.image_size)
+        # print(f"I2I_DiffusionLayer. t_emb.shape={t_emb.shape}")
 
         # Concatenate image with multispectral features and timestep embedding
         image = torch.concat((image, features), dim=1)
+        # print(f"I2I_DiffusionLayer. image.shape={image.shape}")
         image = torch.concat((image, t_emb), dim=1)
+        # print(f"I2I_DiffusionLayer. image.shape={image.shape}")
         
         # Perform the diffusion step
-        return self.diffusion_step(image)
+        diffusion_result = self.diffusion_step(image)
+        # print(f"I2I_DiffusionLayer. diffusion_result.shape={diffusion_result.shape}")
+        return diffusion_result
 
 class SegmentModelWrapper(Module):
     def __init__(self, model: nn.Module, threshold=0.5):
@@ -407,6 +425,22 @@ class Decoder(Module):
 
     def forward(self, x) -> torch.Tensor:
         return self.decoder(x)
+    
+class Encoder(Module):
+    def __init__(self, in_channels: int, mid_channels: int, out_channels: int):
+        super(Encoder, self).__init__()
+        self.encoder = nn.Sequential(
+            nn.Conv2d(in_channels, mid_channels, kernel_size=3, stride=2, padding=1),
+            nn.BatchNorm2d(mid_channels),
+            nn.ReLU(inplace=True),
+            nn.Dropout(0.5),
+            nn.Conv2d(mid_channels, out_channels, kernel_size=3, padding=1),
+            nn.BatchNorm2d(out_channels),
+            nn.ReLU(inplace=True)
+        )
+
+    def forward(self, x) -> torch.Tensor:
+        return self.encoder(x)
     
 
 class LatentSpaceExtractor(Module):

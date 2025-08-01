@@ -92,7 +92,6 @@ def normalize_image(img_tensor, mean_tensor, std_tensor):
 
     return img_tensor
 
-# clamp to [0, 255] and return as uint8
 def denormalize_image(normalized_tensor, mean_tensor, std_tensor):
     # print("running denormalize_image")
     # check that img_tensor, mean_tensor, and std_tensor have same number of channels
@@ -116,6 +115,18 @@ def plot_latent_distribution(latent_arr, num_images=200):
         sampled_values.append(latent.flatten())
 
     all_values = np.concatenate(sampled_values)
+
+    plt.hist(all_values, bins=100, density=True, alpha=0.6, color='g')
+    plt.xlabel("Value")
+    plt.ylabel("Density")
+    plt.grid(True)
+    plt.show()
+
+# plot distribution of one latent space
+def plot_one_latent_distribution(latent_arr):
+    assert latent_arr.ndim == 3, "Expected latent array of shape (C, H, W)"
+
+    all_values = latent_arr.flatten()
 
     plt.hist(all_values, bins=100, density=True, alpha=0.6, color='g')
     plt.xlabel("Value")
@@ -171,3 +182,21 @@ def plot_latent_space(latent_tensor):
     ax.axis('off')
   plt.tight_layout()
   plt.show()
+
+
+# plot distribution of one latent space
+def plot_band_distribution(satellite_arr, num_images=200):
+    assert satellite_arr.ndim == 4, "Expected latent array of shape (B, C, H, W)"
+
+    B, C, H, W = satellite_arr.shape
+
+    random_indices = np.random.choice(B, size=num_images, replace=False)
+
+    plt.figure(figsize=(10, 6))
+    for c in range(C):
+        channel_values = satellite_arr[random_indices, c, :, :].reshape(-1)
+        plt.hist(channel_values, bins=100, density=True, alpha=0.6, label=f'Channel {c}', color='g')
+        plt.xlabel("Value")
+        plt.ylabel("Density")
+        plt.grid(True)
+        plt.show()

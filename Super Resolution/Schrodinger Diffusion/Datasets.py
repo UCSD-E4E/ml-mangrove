@@ -120,7 +120,7 @@ class LatentSpaceDataset(Dataset):
             lr_latent = self.transform(lr_latent)
         return lr_latent, hr_latent
 
-# returns sat rgb normalized : om rgb normalized pairs
+# returns sat rgb normalized(on sat rgb bands) : om rgb normalized(on resnet rgb bands) pairs
 class I2I_RGB_Dataset(Dataset):
     def __init__(self, sat_om: np.ndarray, rgb_om: np.ndarray, rgb_means = None, rgb_sds = None, satellite_means = None, satellite_sds = None):
         self.sat_om = sat_om
@@ -190,3 +190,65 @@ class I2I_RGB_Dataset(Dataset):
         
         return train_dataset, val_dataset
   
+
+# returns sat rgb raw : om rgb raw pairs
+class Raw_I2I_RGB_Dataset(Dataset):
+    def __init__(self, sat_om: np.ndarray, rgb_om: np.ndarray):
+        self.sat_om = sat_om
+        self.rgb_om = rgb_om
+
+    def __len__(self) -> int:
+        return self.sat_om.shape[0]
+
+    def __getitem__(self, idx) -> Tuple:
+        sat_om = self.sat_om[idx]
+        rgb_om = self.rgb_om[idx]
+
+        bands = [3, 2, 1]
+        sat_rgb_om = sat_om[bands, :, :]
+
+        return sat_rgb_om, rgb_om
+
+    def split(self, split_ratio: float):
+        split_index = int(self.sat_om.shape[0] * split_ratio)
+        # Create views for training and validation sets
+        train_sat_om = self.sat_om[:split_index]
+        val_sat_om = self.sat_om[split_index:]
+        
+        train_rgb_om = self.rgb_om[:split_index]
+        val_rgb_om = self.rgb_om[split_index:]
+        
+        train_dataset = Raw_I2I_RGB_Dataset(train_sat_om, train_rgb_om)
+        val_dataset = Raw_I2I_RGB_Dataset(val_sat_om, val_rgb_om)
+        
+        return train_dataset, val_dataset
+
+class Image2ImageDataset(Dataset):
+    def __init__(self, sat_img, drone_img, transform=None):
+        self.sat_img = sat_img
+        self.drone_img = drone_img
+        self.transform = transform
+
+    def __len__(self):
+        return len(self.sat_img)
+
+    def __getitem__(self, idx):
+        sat = self.sat_img[idx]
+        zero_channel = np.zeros((1, sat.shape[1], sat.shape[2]), dtype=np.float32)
+        sat = np.concatenate((sat[:10], zero_channel, sat[10:]), axis=0)
+        drone = self.drone_img[idx]
+        return sat, drone
+
+    def split(self, split_ratio: float):
+        split_index = int(self.sat_img.shape[0] * split_ratio)
+        # Create views for training and validation sets
+        train_sat_om = self.sat_img[:split_index]
+        val_sat_om = self.sat_img[split_index:]
+        
+        train_rgb_om = self.rgb_img[:split_index]
+        val_rgb_om = self.rgb_img[split_index:]
+        
+        train_dataset = Image2ImageDataset(train_sat_om, train_rgb_om)
+        val_dataset = Image2ImageDataset(val_sat_om, val_rgb_om)
+        
+        return train_dataset, val_dataset
