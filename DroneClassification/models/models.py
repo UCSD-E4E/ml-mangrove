@@ -33,7 +33,7 @@ class ResNet_UNet(Module):
     
     Default ResNet is a ResNet18 trained on Sentinel-2 3 channel RGB satellite imagery.
     """
-    def __init__(self, ResNet: Optional[ResNet] = None, input_image_size=256):
+    def __init__(self, ResNet: Optional[ResNet] = None, input_image_size=224):
         super(ResNet_UNet, self).__init__()
         if ResNet is None:
             ResNet = resnet18(
@@ -328,7 +328,9 @@ class SegmentModelWrapper(Module):
         It can also accept batched images of size BxCxHxW.
         """
         image = torch.tensor(image, dtype=torch.float32)
-        image.div_(255.0)
+
+        if image.max() > 1.5:
+            image = image / 255.0
         if len(image.shape) == 3:
             image = image.unsqueeze(0)
         
