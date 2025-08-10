@@ -1,1 +1,1 @@
-from .MemoryMapDataset import MemmapDataset
+from .MemoryMapDataset import MemmapDataset, memmap_copy

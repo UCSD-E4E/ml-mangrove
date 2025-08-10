@@ -1,6 +1,7 @@
 import os
 import gc
-import fiona
+from fiona import listlayers
+from fiona.errors import DriverError
 import numpy as np
 import geopandas as gpd
 import pandas as pd
@@ -135,7 +136,7 @@ def rasterize_shapefiles(path):
                 gdf['geometry'] = gdf['geometry'].buffer(0) # Fix simple invalid geometries
                 if not gdf[~gdf.is_valid].empty:
                     print("Using make_valid for more complex invalid geometry fix.")
-                    gdf.loc[~gdf.is_valid, 'geometry'] = gdf.loc[~gdf.is_valid, 'geometry'].apply(make_valid)
+                    gdf.loc[~gdf.is_valid, 'geometry'] = gdf.loc[~gdf.is_valid, 'geometry'].geometry.apply(make_valid)
                 if not gdf.is_valid.all():
                     print(f"Failed to fix invalid geometries in {name} shapefile. Please check shape data.\n")
                     return
@@ -379,15 +380,15 @@ def _read_all_layers(shapefile_folder):
     combined_gdf_list = []
 
     try:
-        layers = fiona.listlayers(shapefile_path)
-    except fiona.errors.DriverError as e:
+        layers = listlayers(shapefile_path)
+    except DriverError as e:
         print(f"Error listing layers for {shapefile_path}: {e}")
         return None
 
     for layer in layers:
         try:
             gdf = gpd.read_file(shapefile_path, layer=layer)
-        except fiona.errors.DriverError as e:
+        except DriverError as e:
             print(f"Error reading layer {layer} in {shapefile_path}: {e}")
             continue
         
