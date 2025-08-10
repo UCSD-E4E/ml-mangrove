@@ -9,7 +9,7 @@ from torch.optim import AdamW, lr_scheduler
 from torch_ema import ExponentialMovingAverage
 from torchgeo.models import resnet18, get_weight
 import torchvision.utils as tu
-from models.models import ResNet_UNet_Diffusion, ResNet_UNet_NoSkip
+from models.models import *
 from . import util
 from .diffusion import Diffusion
 from typing import Tuple
@@ -122,13 +122,11 @@ class Runner(object):
         self.noise_levels = torch.linspace(opt.t0, opt.T, opt.interval, device=opt.device) * opt.interval
 
         # Build Model
-        unet = ResNet_UNet_NoSkip(ResNet = resnet18(
-                weights=get_weight("ResNet18_Weights.SENTINEL2_ALL_MOCO")
-            ), num_classes=1, input_image_size=224, num_input_channels=13)
         # change 1: if opt.unet_path: unet = unet.load_state_dict(torch.load(opt.unet_path)) 
-        self.net = ResNet_UNet_Diffusion(unet=unet, num_timesteps=len(betas), num_input_channels=13)
-        # print(self.net)
-        # print("betas length:", len(betas))
+        # self.net = I2I_RNUN(num_timesteps=len(betas), opt=opt)
+        self.net = Image2ImageDiffusion(num_timesteps=len(betas), opt=opt)
+        print(self.net)
+        print("betas length:", len(betas))
 
         self.ema = ExponentialMovingAverage(self.net.parameters(), decay=opt.ema)
         if opt.load:
@@ -165,16 +163,13 @@ class Runner(object):
             print_metrics = (iteration < 10) or (iteration % 50 == 0)
             for _ in tqdm(range(n_inner_loop), desc="train_inner_loop", disable=not print_metrics):
                 # sample from boundary pair
-                x0, x1 = self.sample_batch(opt, train_loader)
-                step = torch.randint(0, opt.interval, (x0.shape[0],)).to(opt.device) 
-                xt = self.diffusion.q_sample(step, x0, x1, ot_ode=opt.ot_ode).to(opt.device) # intermediate noisy image
+                x0, x1, cond, step, xt, multispectral_cond = self.sample_batch(opt, train_loader)
 
                 # predict diffusion step
-                pred = self.net(xt, diffuse=True, return_encoding_only=True, step=step, latent_input=True) # predicted noise
+                pred = self.net.diffuser(xt, multispectral_cond, step) # predicted noise
                 label = self.compute_label(step, x0, xt) # ground truth noise
-                # if iteration == 0:
-                #   print("pred shape", pred.shape)
-                #   print("label shape", label.shape)
+                # print("pred shape", pred.shape)
+                # print("label shape", label.shape)
                 loss = F.mse_loss(pred, label)
                 loss.backward()
                 total_train_loss += loss.item()
@@ -232,22 +227,20 @@ class Runner(object):
         n_inner_loop = opt.batch_size // (opt.global_size * opt.microbatch)
 
         for _ in tqdm(range(n_inner_loop), desc="eval_inner_loop"):
-            high_res_image, low_res_image = self.sample_batch(opt, val_loader)
-            x0 = high_res_image.to(opt.device)
-            x1 = low_res_image.to(opt.device)
+            x0, x1, cond, step, xt, multispectral_cond = self.sample_batch(opt, val_loader)
 
             # evaluate model noise prediction
-            step = torch.randint(0, opt.interval, (x0.shape[0],)).to(opt.device) 
-            xt = self.diffusion.q_sample(step, x0, x1, ot_ode=opt.ot_ode).to(opt.device) # intermediate noisy image
-            pred_noise = self.net(xt, diffuse=True, return_encoding_only=True, step=step, latent_input=True) # predicted noise
+            pred_noise = self.net.diffuser(xt, multispectral_cond, step) # predicted noise
             label_noise = self.compute_label(step, x0, xt) # ground truth noise
             noise_prediction_loss = F.mse_loss(pred_noise, label_noise)
             total_noise_prediction_loss += noise_prediction_loss.item()
 
             # evaluate reconstruction with ddpm
-            xs, pred_x0s = self.ddpm_sampling(opt, x1, clip_denoise=opt.clip_denoise, verbose=False)
+            xs, pred_x0s = self.ddpm_sampling(opt, x1, cond=multispectral_cond, clip_denoise=opt.clip_denoise, verbose=False)
+            # print(f"evaluation: xs.shape={xs.shape} xs.dtype={xs.dtype} pred_x0s.shape={pred_x0s.shape} pred_x0s.dtype={pred_x0s.dtype}")
             x0_hat = pred_x0s[:, -1].to(opt.device)
-            reconstrution_loss = F.mse_loss(x0_hat, x0)
+            # print(f"evaluation: x0_hat.shape={x0_hat.shape} x0_hat.dtype={x0_hat.dtype}")
+            reconstrution_loss = F.mse_loss(x0_hat, x0.float())
             total_reconstruction_loss += reconstrution_loss.item()
           
         avg_noise_prediction_loss = total_noise_prediction_loss / n_inner_loop
@@ -320,11 +313,26 @@ class Runner(object):
                 # Upscale back to original size
                 low_res_img = F.interpolate(low_res_img, size=orig_size, mode='bilinear', align_corners=False)
         
+        bands = [3, 2, 1]
         x0 = high_res_img.detach().to(opt.device)
-        x1 = low_res_img.detach().to(opt.device)
+        cond = low_res_img.detach().to(opt.device)
+        x1 = cond.clone()[:, bands, :, :]
+        # print(f"x0.shape={x0.shape} cond.shape={cond.shape} x1.shape={x1.shape}")
+
+        step = torch.randint(0, opt.interval, (x0.shape[0],)).to(opt.device) 
+        xt = self.diffusion.q_sample(step, x0, x1, ot_ode=opt.ot_ode).to(opt.device) # intermediate noisy image
+
+
+        multispectral_features = self.net.encoder(cond)
+        # print(f"multispectral_features.shape={multispectral_features.shape}")
+        gate = self.net.gate_embedding(step.view(-1, 1).float()).to(opt.device)
+        # print(f"gate.shape={gate.shape}")
+        multispectral_cond = self.net.decoder(multispectral_features * gate.unsqueeze(2).unsqueeze(3))
+        # print(f"multispectral_cond.shape={multispectral_cond.shape}")
+
 
         assert x0.shape == x1.shape
-        return x0, x1
+        return x0, x1, cond, step, xt, multispectral_cond
     
     @torch.no_grad()
     def ddpm_sampling(self, opt, x1, mask=None, cond=None, clip_denoise=False, nfe=None, log_count=10, verbose=True):
@@ -365,7 +373,7 @@ class Runner(object):
 
             def pred_x0_fn(xt, step):
                 step = torch.full((xt.shape[0],), step, device=opt.device, dtype=torch.long)
-                out = self.net(xt, diffuse=True, return_encoding_only=True, step=step, latent_input=True)
+                out = self.net.diffuser(xt, cond, step)
                 return self.compute_pred_x0(step, xt, out, clip_denoise=clip_denoise)
 
             xs, pred_x0 = self.diffusion.ddpm_sampling(
