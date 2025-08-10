@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import numpy as np
+import math
 from torch.nn import Module
 from i2sb.diffusion import Diffusion
 from torch.nn import Conv2d, Module
@@ -51,7 +52,7 @@ class Image2ImageDiffusion(Module):
             param.requires_grad = False
 
         # Infer latent space dimensions
-        dummy_input = torch.randn(1, 3, self.image_size, self.image_size)
+        dummy_input = torch.randn(1, 13, self.image_size, self.image_size)
         with torch.no_grad():
             dummy_output = self.encoder(dummy_input)
 
@@ -84,7 +85,7 @@ class Image2ImageDiffusion(Module):
         )
 
         # Diffusion Pipeline
-        self.diffuser = I2I_DiffusionLayer(4, 64)
+        self.diffuser = I2I_DiffusionLayer(224, 64)
     
     def forward(self, multispectral_image, step: Optional[int] = None):
         """
@@ -100,12 +101,16 @@ class Image2ImageDiffusion(Module):
         # If single image, unsqueeze to add batch dimension
         if len(multispectral_image.shape) == 3:
             multispectral_image = multispectral_image.unsqueeze(0)
+        # print(f"Image2ImageDiffusion. in multispectral_image.shape={multispectral_image.shape}")
+        # print(f"Image2ImageDiffusion. in step.shape={step.shape}")
 
         # Split the input into RGB and multispectral channels
         rgb_image = multispectral_image[:, :3, :, :]  # First 3 channels for RGB
+        # print(f"Image2ImageDiffusion. rgb_image.shape={rgb_image.shape}")
 
         # Encode Multispectral image
         multispectral_features = self.encoder(multispectral_image)
+        # print(f"Image2ImageDiffusion. multispectral_features.shape={multispectral_features.shape}")
         del multispectral_image
 
         # Diffuse
@@ -117,22 +122,26 @@ class Image2ImageDiffusion(Module):
                 multispectral_features = self.decoder(multispectral_features * gate.unsqueeze(2).unsqueeze(3))
                 rgb_image = self.diffuser(rgb_image, multispectral_features, time_step)
         else:
-            gate = self.gate_embedding(torch.tensor([step], dtype=torch.float32).to(rgb_image.device))
+            gate = self.gate_embedding(step.view(-1, 1)).to(rgb_image.device)
+            # print(f"Image2ImageDiffusion. gate.shape={gate.shape}")
             multispectral_features = self.decoder(multispectral_features * gate.unsqueeze(2).unsqueeze(3))
+            # print(f"Image2ImageDiffusion. multispectral_features.shape={multispectral_features.shape}")
             rgb_image = self.diffuser(rgb_image, multispectral_features, step)
+            # print(f"Image2ImageDiffusion. rgb_image.shape={rgb_image.shape}")
     
         return rgb_image
 
 
+
 class ResNet_UNet_Diffusion(Module):
-    def __init__(self, num_timesteps=1000, image_size=224, opt=None, unet=None):
+    def __init__(self, num_timesteps=1000, image_size=224, opt=None, unet=None, num_input_channels=13):
         super(ResNet_UNet_Diffusion, self).__init__()
         if unet is None:
-            unet = ResNet_UNet_NoSkip(ResNet = resnet18(weights=get_weight("ResNet18_Weights.SENTINEL2_ALL_MOCO")), image_size=image_size, num_input_channels=13)
+            unet = ResNet_UNet_NoSkip(ResNet = resnet18(weights=get_weight("ResNet18_Weights.SENTINEL2_ALL_MOCO")), input_image_size=image_size, num_input_channels=num_input_channels)
         self.opt = opt
         self.input_image_size = unet.input_image_size
         self.num_timesteps = num_timesteps
-        self.image_size = image_size
+        # self.image_size = image_size
 
         # Inherit encoder and decoder layers from ResNet UNet NoSkip
         self.encoder = unet.encoder
@@ -140,10 +149,11 @@ class ResNet_UNet_Diffusion(Module):
         self.decoder = unet.classification_head
 
         # Infer latent space dimensions
-        dummy_input = torch.randn(1, 3, self.input_image_size, self.input_image_size)
+        dummy_input = torch.randn(1, num_input_channels, self.input_image_size, self.input_image_size)
         with torch.no_grad():
-            dummy_output = self.center(self.encoder(dummy_input))
+            dummy_output = self.encoder(dummy_input)
         output_channels = dummy_output.shape[1]
+        print(f"dummy input: latent space channels={output_channels}")
 
         # Diffusion Pipeline
         self.diffuser = DiffusionLayer(output_channels, 64)
@@ -194,7 +204,7 @@ class ResNet_UNet_NoSkip(Module):
     """
     def __init__(self, ResNet = resnet18(
                 weights=get_weight("ResNet18_Weights.SENTINEL2_RGB_MOCO")
-            ), num_classes=1, input_image_size=224):
+            ), num_classes=1, input_image_size=224, num_input_channels=3):
         super(ResNet_UNet_NoSkip, self).__init__()
         self.num_classes = num_classes
         self.input_image_size = input_image_size
@@ -213,7 +223,7 @@ class ResNet_UNet_NoSkip(Module):
             ResNet.layer4
         )
     
-        dummy_input = torch.randn(1, 3, input_image_size, input_image_size)
+        dummy_input = torch.randn(1, num_input_channels, input_image_size, input_image_size).to(next(self.encoder.parameters()).device)
         x = self.encoder(dummy_input)
         
         # Define feature dimensions
@@ -274,6 +284,8 @@ class DiffusionLayer(nn.Module):
         self.diffusion_step = nn.Sequential(
             nn.Conv2d(latent_dim + time_embedding_dim, latent_dim, kernel_size=3, padding=1),
             nn.ReLU(),
+            nn.Conv2d(latent_dim, latent_dim, kernel_size=3, padding=1),
+            nn.ReLU(),
             nn.Conv2d(latent_dim, latent_dim, kernel_size=3, padding=1)
         )
 
@@ -296,6 +308,7 @@ class DiffusionLayer(nn.Module):
 class I2I_DiffusionLayer(nn.Module):
     def __init__(self, image_size, time_embedding_dim=64):
         super(I2I_DiffusionLayer, self).__init__()
+        self.image_size = image_size
         
         # Timestep embedding network
         self.timestep_embed = nn.Sequential(
@@ -319,15 +332,22 @@ class I2I_DiffusionLayer(nn.Module):
             t (torch.Tensor): Current timestep tensor (of shape [batch_size, 1]).
          """
         # Embed the timestep
-        t_emb = self.timestep_embed(t.view(-1, 1))
+        # print(f"I2I_DiffusionLayer. image.shape={image.shape} features.shape={features.shape} t.shape={t.shape}")
+        t_emb = self.timestep_embed(t.view(-1, 1).float())
+        # print(f"I2I_DiffusionLayer. t_emb.shape={t_emb.shape}")
         t_emb = t_emb.view(-1, 1, self.image_size, self.image_size)
+        # print(f"I2I_DiffusionLayer. t_emb.shape={t_emb.shape}")
 
         # Concatenate image with multispectral features and timestep embedding
         image = torch.concat((image, features), dim=1)
+        # print(f"I2I_DiffusionLayer. image.shape={image.shape}")
         image = torch.concat((image, t_emb), dim=1)
+        # print(f"I2I_DiffusionLayer. image.shape={image.shape}")
         
         # Perform the diffusion step
-        return self.diffusion_step(image)
+        diffusion_result = self.diffusion_step(image)
+        # print(f"I2I_DiffusionLayer. diffusion_result.shape={diffusion_result.shape}")
+        return diffusion_result
 
 class SegmentModelWrapper(Module):
     def __init__(self, model: nn.Module, threshold=0.5):
@@ -406,6 +426,22 @@ class Decoder(Module):
     def forward(self, x) -> torch.Tensor:
         return self.decoder(x)
     
+class Encoder(Module):
+    def __init__(self, in_channels: int, mid_channels: int, out_channels: int):
+        super(Encoder, self).__init__()
+        self.encoder = nn.Sequential(
+            nn.Conv2d(in_channels, mid_channels, kernel_size=3, stride=2, padding=1),
+            nn.BatchNorm2d(mid_channels),
+            nn.ReLU(inplace=True),
+            nn.Dropout(0.5),
+            nn.Conv2d(mid_channels, out_channels, kernel_size=3, padding=1),
+            nn.BatchNorm2d(out_channels),
+            nn.ReLU(inplace=True)
+        )
+
+    def forward(self, x) -> torch.Tensor:
+        return self.encoder(x)
+    
 
 class LatentSpaceExtractor(Module):
     """
@@ -413,32 +449,60 @@ class LatentSpaceExtractor(Module):
 
     Use this when preprocessing a dataset for training the diffusion model.
     """
-    def __init__(self, drone_resnet=None, satellite_resnet=None, image_size=224):
+    def __init__(self, image_size=224, center_path='/Users/evanwu/Downloads/224_moco_resnet18_noskip.pth'):
         super(LatentSpaceExtractor, self).__init__()
         self.image_size = image_size
 
-        # Build Drone Encoder
-        drone_ResNet_UNet = ResNet_UNet(ResNet=drone_resnet, image_size=image_size, num_input_channels=3)
-        self.drone_layer1 = drone_ResNet_UNet.layer1
-        self.drone_layer2 = drone_ResNet_UNet.layer2
-        self.drone_layer3 = drone_ResNet_UNet.layer3
-        self.drone_layer4 = drone_ResNet_UNet.layer4
-        self.drone_center = drone_ResNet_UNet.center
-        del drone_ResNet_UNet
+        PRETRAINED_CENTER_DECODER_0_WEIGHT_FIRST_VALUE = 0.6512
+        RGB_MOCO_PATH = 'ResNet18_Weights.SENTINEL2_RGB_MOCO'
+        ALL_MOCO_PATH = 'ResNet18_Weights.SENTINEL2_ALL_MOCO'
+        PRETRAINED_WEIGHTS = torch.load(center_path, map_location=torch.device('cpu'))
+        CENTER_LAYERS = ['center.decoder.0.weight', 'center.decoder.0.bias', 'center.decoder.1.weight', 'center.decoder.1.bias', 'center.decoder.1.running_mean', 'center.decoder.1.running_var', 'center.decoder.1.num_batches_tracked', 'center.decoder.4.weight', 'center.decoder.4.bias', 'center.decoder.5.weight', 'center.decoder.5.bias', 'center.decoder.5.running_mean', 'center.decoder.5.running_var', 'center.decoder.5.num_batches_tracked', 'center.decoder.7.weight', 'center.decoder.7.bias']
 
-        # Build Satellite Encoder
-        if satellite_resnet is None:
-            sat_ResNet_UNet = ResNet_UNet(resnet18(weights=get_weight("ResNet18_Weights.SENTINEL2_ALL_MOCO")), image_size=image_size, num_input_channels=13)
+        missing_center_layers = [layer for layer in CENTER_LAYERS if layer not in PRETRAINED_WEIGHTS]
+        if missing_center_layers:
+            print('❌ Missing center layers in pretrained weights:', missing_center_layers)
         else:
-            sat_ResNet_UNet = ResNet_UNet(ResNet=satellite_resnet, image_size=image_size, num_input_channels=13)
-        
-        self.sat_layer1 = sat_ResNet_UNet.layer1
-        self.sat_layer2 = sat_ResNet_UNet.layer2
-        self.sat_layer3 = sat_ResNet_UNet.layer3
-        self.sat_layer4 = sat_ResNet_UNet.layer4
-        self.sat_center = sat_ResNet_UNet.center
-        del sat_ResNet_UNet
+            print('✅ All center layers found')
 
+        # Build Drone RNUNNoSkip with RGB_MOCO encoder weights and loaded in center weights
+        drone_RNUNNoSkip = ResNet_UNet_NoSkip(ResNet=resnet18(weights=get_weight(RGB_MOCO_PATH)), num_classes=1, input_image_size=224, num_input_channels=3)
+        drone_RNUNNoSkip_base_dict = drone_RNUNNoSkip.state_dict()
+        for layer in CENTER_LAYERS:
+            drone_RNUNNoSkip_base_dict[layer] = PRETRAINED_WEIGHTS[layer]
+        drone_RNUNNoSkip.load_state_dict(drone_RNUNNoSkip_base_dict)
+        print('✅ Pretrained center layers successfully loaded into drone_RNUNNoSkip')
+
+        # Build Satellite RNUNNoSkip with RGB_ALL encoder weights and loaded in center weights
+        satellite_RNUNNoSkip = ResNet_UNet_NoSkip(ResNet=resnet18(weights=get_weight(ALL_MOCO_PATH)), num_classes=1, input_image_size=224, num_input_channels=13)
+        satellite_RNUNNoSkip_base_dict = satellite_RNUNNoSkip.state_dict()
+        for layer in CENTER_LAYERS:
+            satellite_RNUNNoSkip_base_dict[layer] = PRETRAINED_WEIGHTS[layer]
+        satellite_RNUNNoSkip.load_state_dict(satellite_RNUNNoSkip_base_dict)
+        print('✅ Pretrained center layers successfully loaded into satellite_RNUNNoSkip')
+
+        # Sanity check that the first weight value matches for satellite and drone center
+        drone_state_dict = drone_RNUNNoSkip.state_dict()
+        assert math.isclose(drone_state_dict['center.decoder.0.weight'].flatten()[0].item(), PRETRAINED_CENTER_DECODER_0_WEIGHT_FIRST_VALUE, abs_tol=1e-4), f"first weight from center.decoder.0.weight={drone_state_dict['center.decoder.0.weight'].flatten()[0].item()} does not equal PRETRAINED_CENTER_DECODER_0_WEIGHT_FIRST_VALUE={PRETRAINED_CENTER_DECODER_0_WEIGHT_FIRST_VALUE}"
+        # print(drone_state_dict['center.decoder.0.weight'].flatten()[0].item() , 'and', PRETRAINED_CENTER_DECODER_0_WEIGHT_FIRST_VALUE)
+        sat_state_dict = satellite_RNUNNoSkip.state_dict()
+        assert math.isclose(sat_state_dict['center.decoder.0.weight'].flatten()[0].item(), PRETRAINED_CENTER_DECODER_0_WEIGHT_FIRST_VALUE, abs_tol=1e-4), f"first weight from center.decoder.0.weight={sat_state_dict['center.decoder.0.weight'].flatten()[0].item()} does not equal PRETRAINED_CENTER_DECODER_0_WEIGHT_FIRST_VALUE={PRETRAINED_CENTER_DECODER_0_WEIGHT_FIRST_VALUE}"
+        # print(sat_state_dict['center.decoder.0.weight'].flatten()[0].item() , 'and', PRETRAINED_CENTER_DECODER_0_WEIGHT_FIRST_VALUE)
+
+        # Assign LSE layers
+        self.drone_encoder = drone_RNUNNoSkip.encoder
+        self.drone_center = drone_RNUNNoSkip.center
+        del drone_RNUNNoSkip
+
+        self.satellite_encoder = satellite_RNUNNoSkip.encoder
+        self.satellite_center = satellite_RNUNNoSkip.center
+        del satellite_RNUNNoSkip
+
+        # Additional sanity checks on self.drone_center and self.satellite_center
+        assert math.isclose(self.drone_center.decoder[0].weight.flatten()[0].item(), PRETRAINED_CENTER_DECODER_0_WEIGHT_FIRST_VALUE, abs_tol=1e-4), f"first weight from self.drone_center.decoder={self.drone_center.decoder[0].weight.flatten()[0].item()} does not equal PRETRAINED_CENTER_DECODER_0_WEIGHT_FIRST_VALUE={PRETRAINED_CENTER_DECODER_0_WEIGHT_FIRST_VALUE}"
+        print(self.drone_center.decoder[0].weight.flatten()[0].item() , 'and', PRETRAINED_CENTER_DECODER_0_WEIGHT_FIRST_VALUE)
+        assert math.isclose(self.satellite_center.decoder[0].weight.flatten()[0].item(), PRETRAINED_CENTER_DECODER_0_WEIGHT_FIRST_VALUE, abs_tol=1e-4), f"first weight from self.satellite_center.decoder={self.satellite_center.decoder[0].weight.flatten()[0].item()} does not equal PRETRAINED_CENTER_DECODER_0_WEIGHT_FIRST_VALUE={PRETRAINED_CENTER_DECODER_0_WEIGHT_FIRST_VALUE}"
+        print(self.satellite_center.decoder[0].weight.flatten()[0].item() , 'and', PRETRAINED_CENTER_DECODER_0_WEIGHT_FIRST_VALUE)
 
     def forward(self, image) -> torch.Tensor:
         """
@@ -451,19 +515,13 @@ class LatentSpaceExtractor(Module):
         # Check if images are 3-channel RGB (drone) or 13-channel Multispectral (satellite)
         if image.shape[1] == 3:
             # Drone image
-            x1 = self.drone_layer1(image)
-            x2 = self.drone_layer2(x1)
-            x3 = self.drone_layer3(x2)
-            x4 = self.drone_layer4(x3)
-            x4 = self.drone_center(x4)
-            return x4
+            x1 = self.drone_encoder(image)
+            # x2 = self.drone_center(x1)
+            return x1
         elif image.shape[1] == 13:
             # Satellite image
-            x1 = self.sat_layer1(image)
-            x2 = self.sat_layer2(x1)
-            x3 = self.sat_layer3(x2)
-            x4 = self.sat_layer4(x3)
-            x4 = self.sat_center(x4)
-            return x4
+            x1 = self.satellite_encoder(image)
+            # x2 = self.satellite_center(x1)
+            return x1
         else:
             raise ValueError("Input image must have 3 (drone) or 13 (satellite) channels, got {} channels.".format(image.shape[1]))
