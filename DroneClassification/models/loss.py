@@ -16,30 +16,56 @@ class LandmassLoss(nn.Module):
 
 class JaccardLoss(nn.Module):
     """
-    A Loss function to calculate the Jaccard index between the prediction and the target.
-
-    The Jaccard index is a measure of the similarity between two sets defined by the IOU (Intersection over Union).
+    Jaccard Loss (IoU Loss) for segmentation
+    
+    This loss directly optimizes the Intersection over Union metric
     """
-    def __init__(self, smooth=1e-10):
+    
+    def __init__(self, num_classes, ignore_index=255, smooth=1e-6, weight=None):
+        """
+        Args:
+            num_classes: Number of segmentation classes
+            ignore_index: Index to ignore in loss calculation (default: 255)
+            smooth: Smoothing factor to avoid division by zero
+            weight: Optional class weights for handling imbalance
+        """
         super(JaccardLoss, self).__init__()
+        self.num_classes = num_classes
+        self.ignore_index = ignore_index
         self.smooth = smooth
-
-    def forward(self, y_pred : torch.tensor, y_true: torch.tensor):
-        y_pred = torch.sigmoid(y_pred)
+        self.weight = weight
         
-        # Flatten the tensors to simplify the calculation
-        y_pred = y_pred.view(-1)
-        y_true = y_true.view(-1)
+    def forward(self, predictions, targets):
+        """
+        Args:
+            predictions: [B, C, H, W] - model logits
+            targets: [B, H, W] - ground truth class indices
+        """
+        # Apply softmax to get probabilities
+        predictions = F.softmax(predictions, dim=1)
         
-        # Calculate intersection and union
-        intersection = (y_pred * y_true).sum()
-        union = y_pred.sum() + y_true.sum() - intersection
+        # Create one-hot encoding for targets
+        targets_one_hot = F.one_hot(targets, num_classes=self.num_classes).permute(0, 3, 1, 2).float()
         
-        # Calculate the Jaccard index
-        jaccard_index = (intersection + self.smooth) / (union + self.smooth)
+        # Handle ignore_index
+        if self.ignore_index is not None:
+            mask = (targets != self.ignore_index).float().unsqueeze(1)
+            predictions = predictions * mask
+            targets_one_hot = targets_one_hot * mask
         
-        # Return the Jaccard loss (1 - Jaccard index)
-        return 1 - jaccard_index
+        # Calculate intersection and union for each class
+        intersection = (predictions * targets_one_hot).sum(dim=(2, 3))
+        union = predictions.sum(dim=(2, 3)) + targets_one_hot.sum(dim=(2, 3)) - intersection
+        
+        # Calculate IoU for each class
+        iou = (intersection + self.smooth) / (union + self.smooth)
+        
+        # Apply class weights if provided
+        if self.weight is not None:
+            iou = iou * self.weight.to(iou.device)
+        
+        # Return 1 - mean IoU as loss
+        return 1 - iou.mean()
 
 
 class DistanceCountLoss(nn.Module):
