@@ -17,6 +17,23 @@ from typing import Tuple
 from pyproj import CRS
 from tqdm import tqdm
 
+def make_chunk_dirs(data_path: str, num_chunks: int):
+    """
+    Creates chunk directory within the specified data path.
+    
+    Args:
+        data_path (str): Path where chunk directory will be created.
+        num_chunks (int): Number of chunk directories to create.
+    """
+    chunk_dir = os.path.join(data_path, 'Chunks')
+    os.makedirs(chunk_dir, exist_ok=True)
+    data_path = chunk_dir
+    for i in range(1, num_chunks + 1):
+        chunk_dir = os.path.join(data_path, f'Chunk {i}')
+        os.makedirs(chunk_dir, exist_ok=True)
+        labels_dir = os.path.join(chunk_dir, 'labels')
+        os.makedirs(labels_dir, exist_ok=True)
+    print(f"Created {num_chunks} chunk directories in {data_path}")
 
 def tile_dataset(data_path: str, combined_images_file: str, combined_labels_file: str, chunk_buffer_size: int=1, image_size=224):
         
@@ -345,9 +362,8 @@ def _create_pairs(rgb_data, label_data, tile_size) -> Tuple[np.ndarray, np.ndarr
     images = []
     labels = []
     for (rgb_tile, _), (label_tile, _) in zip(_tile_generator(rgb_data, tile_size), _tile_generator(label_data, tile_size)):
-        if not np.any(label_tile == 255):  # Check for nodata values in label tile
-            images.append(rgb_tile[:3, :, :])  # Keep only the first three channels (RGB)
-            labels.append(label_tile)
+        images.append(rgb_tile[:3, :, :])  # Keep only the first three channels (RGB)
+        labels.append(label_tile)
     
     # Convert lists to numpy arrays
     images = np.array(images)
@@ -430,15 +446,21 @@ def _tile_tiff_pair(chunk_path: str, image_size=224) -> Tuple[np.ndarray, np.nda
     name = chunk_path.split('/')[-1]
     print(f"Processing {name}...")
 
-    
-    name_list = name.split(' ')
-    rgb_name = "Chunk" + name_list[1]
-    if len(name_list) > 2:
-        rgb_name += "_" + name_list[2]
-    rgb_name += ".tif"
+    # Find file with .tif extension
+    rgb_files = [f for f in os.listdir(chunk_path) if f.endswith('.tif')]
 
-    rgb_path = os.path.join(chunk_path, rgb_name)
-    label_path = os.path.join(chunk_path, "labels.tif")
+    if not rgb_files:
+        print(f"No TIFF files found in {chunk_path}. Skipping...")
+        return np.array([]), np.array([])
+    rgb_path = os.path.join(chunk_path, rgb_files[0])
+
+    # Find label tif
+    label_path = os.path.join(chunk_path, "labels")
+    label_files = [f for f in os.listdir(label_path) if f.endswith('.tif')]
+    if not label_files:
+        print(f"No label TIFF files found in {label_path}. Skipping...")
+        return np.array([]), np.array([])
+    label_path = os.path.join(label_path, label_files[0])
     
     rgb_data, _ = _read_tiff(rgb_path)
     label_data, label_meta = _read_tiff(label_path)
@@ -449,10 +471,6 @@ def _tile_tiff_pair(chunk_path: str, image_size=224) -> Tuple[np.ndarray, np.nda
 
     if label_meta['nodata'] is None:
         label_meta['nodata'] = 255  # Set nodata value if not defined
-
-    # Ensure label_data has a single channel
-    if label_data.shape[0] != 1:
-        raise ValueError("Label TIFF should have a single channel.")
 
     # Create pairs of tiles
     images, labels = _create_pairs(rgb_data, label_data, image_size)
