@@ -2,12 +2,15 @@ from torch.utils.data import Dataset
 import numpy as np
 import os
 import gc
+from pathlib import Path
 from numpy.lib.format import open_memmap
 from tqdm import tqdm
 import torch
+from torchvision import tv_tensors
+import torchvision.transforms.v2 as T
 
 class MemmapDataset(Dataset):
-    def __init__(self, images: np.memmap, labels: np.memmap, start: int=0, end: int=-1):
+    def __init__(self, images, labels, transforms: T.Compose, start: int=0, end: int=-1):
         """
         Inputs are expected to be memory mapped numpy arrays (.npy)
 
@@ -16,23 +19,34 @@ class MemmapDataset(Dataset):
         Args:
             images (np.memmap): Memory mapped numpy array of images
             labels (np.memmap): Memory mapped numpy array of labels
-            parent_dir (str): Directory where the example and label memmap files are stored
+            transforms (T.Compose): Optional torchvision transforms to apply to each image
             start (int): Start index for slicing the dataset (default: 0)
             end (int): End index for slicing the dataset (default: None, which means the end of the dataset)
         """
-        if end == -1: end = images.shape[0]
+        # Handle both file paths and loaded arrays
+        self.parent_dir = os.path.dirname(getattr(images, "filename", "")) or "Unknown"
+        if isinstance(images, (str, Path)):
+            self.images = np.load(images, mmap_mode='r+')
+        else:
+            self.images = images
+            
+        if isinstance(labels, (str, Path)):
+            self.labels = np.load(labels, mmap_mode='r+')
+        else:
+            self.labels = labels
+
+        if end == -1: end = self.images.shape[0]
         self.start = int(start)
         self.end = int(end)
-        assert 0 <= self.start <= self.end <= images.shape[0], "Invalid start/end"
+        assert 0 <= self.start <= self.end <= self.images.shape[0], "Invalid start/end"
 
-        self.images = images
-        self.labels = labels
-        self.parent_dir = os.path.dirname(getattr(images, "filename", "")) or "Unknown"
+        self.transforms = transforms
 
+        # Normalization
         mean = [0.485, 0.456, 0.406]
-        std  = [0.229, 0.224, 0.225]
+        std = [0.229, 0.224, 0.225]
         self.mean_tensor = torch.tensor(mean, dtype=torch.float32).view(3,1,1)
-        self.std_tensor  = torch.tensor(std,  dtype=torch.float32).view(3,1,1)
+        self.std_tensor = torch.tensor(std, dtype=torch.float32).view(3,1,1)
 
     def __len__(self) -> int:
         return self.end - self.start
@@ -42,17 +56,12 @@ class MemmapDataset(Dataset):
         image = self.images[i].copy()
         label = self.labels[i].copy()
 
-        x = torch.from_numpy(image).float()
-        # scale if 0..255
-        if x.max() > 1.5: x = x / 255.0
+        image = tv_tensors.Image(torch.from_numpy(image).float())
+        label = tv_tensors.Mask(torch.from_numpy(label).long())
+        image, label = self.transforms(image, label)
 
-        # expect CHW; if HWC, permute once-per-item
-        if x.ndim == 3 and x.shape[0] != 3 and x.shape[-1] == 3:
-            x = x.permute(2,0,1)
-        x = (x - self.mean_tensor) / self.std_tensor
+        return image, label
 
-        return x, torch.as_tensor(label, dtype=torch.long)
-    
     def shuffle(self):
         # Check if dataset is read only
         if self.images.flags.writeable == False or self.labels.flags.writeable == False:
@@ -72,11 +81,11 @@ class MemmapDataset(Dataset):
                 self.images.flush()
                 self.labels.flush()
 
-    def split(self, split_ratio: float):
+    def split(self, split_ratio: float, valid_transforms: T.Compose) -> tuple['MemmapDataset', 'MemmapDataset']:
         n = self.__len__()
         split_n = int(n * split_ratio)
-        train  = MemmapDataset(self.images, self.labels, start=self.start,            end=self.start + split_n)
-        valid = MemmapDataset(self.images, self.labels, start=self.start + split_n, end=self.end)
+        train  = MemmapDataset(self.images, self.labels, transforms=self.transforms, start=self.start, end=self.start + split_n)
+        valid = MemmapDataset(self.images, self.labels, transforms=valid_transforms, start=self.start + split_n, end=self.end)
         return train, valid
     
     def get_parent_dir(self) -> str:
@@ -146,6 +155,7 @@ class MemmapDataset(Dataset):
         return MemmapDataset(
             images=np.load(images_path, mmap_mode='r', allow_pickle=True),
             labels=np.load(labels_path, mmap_mode='r', allow_pickle=True),
+            transforms=self.transforms
         )
 
     def copy_to(self, output_path: str, source_indices=None, dest_indices=None, chunk_size: int = 1024):
