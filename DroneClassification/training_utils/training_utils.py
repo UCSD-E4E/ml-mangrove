@@ -1,7 +1,7 @@
 import numpy as np
 import matplotlib.pyplot as plt
 import torch
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import DataLoader
 import torch.nn as nn
 from torch.optim import Adam, AdamW
 import torch.optim as optim
@@ -10,97 +10,7 @@ from pathlib import Path
 import json
 import logging
 from datetime import datetime
-from typing import Callable, List, Optional, Union, Dict, Any
-
-
-class SegmentationMetrics:
-    """Segmentation metrics that work with your existing class definitions"""
-    
-    def __init__(self, classes_dict=None, rgb_to_class=None, ignore_index=255):
-        """
-        Initialize with your exact class structure
-        
-        Args:
-            classes_dict: Your classes dict {(255,0,0): "HUMAN_ARTIFACT", ...}
-            rgb_to_class: Your rgb_to_class dict {(255,0,0): 0, ...}
-            ignore_index: Index to ignore in calculations (default: 255)
-        """
-        if classes_dict is not None:
-            self.num_classes = len(classes_dict)
-            self.class_names = list(classes_dict.values())
-        else:
-            # Fallback defaults that match your setup
-            self.num_classes = 6
-            self.class_names = ["HUMAN_ARTIFACT", "VEGETATION", "BUILDING", "CAR", "LOW_VEGETATION", "ROAD"]
-        
-        self.ignore_index = ignore_index
-        
-    def calculate_metrics(self, predictions, targets):
-        """Calculate comprehensive segmentation metrics"""
-        
-        # Get predicted classes
-        if predictions.dim() == 4:  # [B, C, H, W]
-            pred_classes = torch.argmax(predictions, dim=1)
-        else:  # [B, H, W]
-            pred_classes = predictions
-        
-        # Flatten for calculation
-        pred_flat = pred_classes.flatten()
-        target_flat = targets.flatten()
-        
-        # Remove ignored pixels (like your ignore_index=255)
-        if self.ignore_index is not None:
-            mask = target_flat != self.ignore_index
-            pred_flat = pred_flat[mask]
-            target_flat = target_flat[mask]
-        
-        # Overall pixel accuracy
-        correct = (pred_flat == target_flat).float()
-        pixel_acc = correct.mean().item()
-        
-        # Per-class metrics
-        class_metrics = {}
-        ious = []
-        precisions = []
-        recalls = []
-        
-        for c in range(self.num_classes):
-            pred_c = (pred_flat == c)
-            target_c = (target_flat == c)
-            
-            tp = (pred_c & target_c).sum().float()
-            fp = (pred_c & ~target_c).sum().float()
-            fn = (~pred_c & target_c).sum().float()
-            
-            precision = tp / (tp + fp + 1e-8)
-            recall = tp / (tp + fn + 1e-8)
-            iou = tp / (tp + fp + fn + 1e-8)
-            f1 = 2 * precision * recall / (precision + recall + 1e-8)
-            
-            class_metrics[self.class_names[c]] = {
-                'precision': precision.item(),
-                'recall': recall.item(),
-                'iou': iou.item(),
-                'f1': f1.item()
-            }
-            
-            ious.append(iou.item())
-            precisions.append(precision.item())
-            recalls.append(recall.item())
-        
-        # Return metrics in format compatible with your existing code
-        return {
-            'Loss': 0.0,  # Will be filled by training loop
-            'Precision': np.mean(precisions),  # Your existing code expects this
-            'Recall': np.mean(recalls),        # Your existing code expects this
-            'IOU': np.mean(ious),             # Your existing code expects this
-            'Pixel_Accuracy': pixel_acc,
-            'Mean_IoU': np.mean(ious),
-            'Mean_Precision': np.mean(precisions),
-            'Mean_Recall': np.mean(recalls),
-            'class_metrics': class_metrics
-        }
-    
+from typing import Callable, List, Optional, Union
 
 class TrainingSession:
     """ Initializes the training session with the model, data loaders, loss function, and training parameters.
@@ -149,8 +59,7 @@ class TrainingSession:
                  scheduler_type: str = 'cosine',
                  weight_decay: float = 1e-4,
                  experiment_name: str = None, # type: ignore
-                 save_checkpoints: bool = True,
-                 metrics_calculator: SegmentationMetrics = None): # type: ignore
+                 save_checkpoints: bool = True):
         
         # Device setup
         if device is None:
@@ -174,7 +83,6 @@ class TrainingSession:
         self.scheduler_type = scheduler_type
         self.weight_decay = weight_decay
         self.save_checkpoints = save_checkpoints
-        self.metrics_calculator = metrics_calculator
         
         # Multiple test loaders handling
         if isinstance(testLoader, list):
@@ -330,9 +238,7 @@ class TrainingSession:
             if isinstance(self.testLoader, list):
                 epoch_metrics = []
                 for i, loader in enumerate(self.testLoader):
-                    metrics = self._evaluate(loader)
-                    metrics['Loss'] = epoch_loss  # Add training loss to metrics
-                    epoch_metrics.append(metrics)
+                    epoch_metrics.append(self._evaluate(loader))
                 all_metrics.append(epoch_metrics)
                 
                 # Check for best model
@@ -344,7 +250,6 @@ class TrainingSession:
                 
             else:
                 metrics = self._evaluate(self.testLoader)
-                metrics['Loss'] = epoch_loss
                 all_metrics.append(metrics)
                 
                 # Check for best model
@@ -359,7 +264,7 @@ class TrainingSession:
                 self._log_epoch_results(epoch, epoch_loss, all_metrics[-1] if not isinstance(self.testLoader, list) else epoch_metrics)
             
             # Save checkpoint
-            self.save_checkpoint(epoch + 1, all_metrics[-1] if not isinstance(self.testLoader, list) else epoch_metrics, is_best)
+            self.save_checkpoint(epoch + 1, all_metrics[-1] if not isinstance(self.testLoader, list) else epoch_metrics, is_best) # type: ignore
             
             # Update scheduler
             if isinstance(self.scheduler, optim.lr_scheduler.ReduceLROnPlateau):
@@ -424,16 +329,11 @@ class TrainingSession:
         # Calculate comprehensive metrics
         all_predictions = torch.cat(all_predictions)
         all_targets = torch.cat(all_targets)
-        
-        if self.metrics_calculator:
-            metrics = self.metrics_calculator.calculate_metrics(all_predictions, all_targets)
-        else:
-            metrics = self._calculate_basic_metrics(all_predictions, all_targets)
-        
+        metrics = self._calculate_segmentation_metrics(all_predictions, all_targets)
         metrics['Loss'] = total_loss / len(dataloader)
         return metrics
 
-    def _calculate_basic_metrics(self, predictions, targets):
+    def _calculate_segmentation_metrics(self, predictions, targets):
         """Calculate basic segmentation metrics without external calculator"""
         
         # Get predicted classes
@@ -649,3 +549,28 @@ def setup_device():
         print("WARNING: No GPU found. Defaulting to CPU.")
 
     return DEVICE
+
+
+def calculate_class_weights(labels_path, classes, power=2.0):
+    num_classes = len(classes)
+    labels = np.load(labels_path, mmap_mode='r')
+    unique, counts = np.unique(labels, return_counts=True)
+    weights = np.ones(num_classes)
+    total_pixels = counts.sum()
+
+    print("Class distribution:")
+    class_names = list(classes.values())
+    for class_id, count in zip(unique, counts):
+        if 0 <= class_id < len(class_names):
+            pct = 100 * count / total_pixels
+            print(f"  {class_names[class_id]:15}: {count:10,} pixels ({pct:5.1f}%)")
+        
+    for class_id, count in zip(unique, counts):
+        if 0 <= class_id < num_classes:
+            frequency = count / total_pixels
+            # Use power to make weights more extreme
+            weights[class_id] = (1.0 / frequency) ** power
+    
+    # Normalize so average weight is 1
+    weights = weights / weights.mean()
+    return torch.FloatTensor(weights)
