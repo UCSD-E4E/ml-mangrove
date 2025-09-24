@@ -1,2 +1,2 @@
-from data_visualization import *
-from training_utils import *
+from .training_utils import *
+from .data_visualization import *
