@@ -6,6 +6,7 @@ from torchgeo.models import resnet18, get_weight
 import torchvision
 from torchvision.models import densenet121, DenseNet121_Weights
 from torchvision.models import resnet18 as tv_resnet18
+from transformers import SegformerForSemanticSegmentation
 from torchvision.models.resnet import ResNet
 from typing import Optional
 
@@ -113,64 +114,6 @@ class ResNet_UNet(Module):
 
         return x
 
-
-class ResNet_UNet_NoSkip(Module):
-    """
-    ResNet UNet without any skip connections.
-    """
-    def __init__(self, ResNet : ResNet = tv_resnet18(weights=torchvision.models.ResNet18_Weights.IMAGENET1K_V1), num_classes=1, input_image_size=224):
-        super(ResNet_UNet_NoSkip, self).__init__()
-        self.num_classes = num_classes
-        self.input_image_size = input_image_size
-        
-        for param in ResNet.parameters():
-            param.requires_grad = False
-        
-        self.encoder = nn.Sequential(
-            ResNet.conv1,
-            ResNet.bn1,
-            nn.ReLU(),
-            ResNet.maxpool,
-            ResNet.layer1,
-            ResNet.layer2,
-            ResNet.layer3,
-            ResNet.layer4
-        )
-    
-        dummy_input = torch.randn(1, 3, input_image_size, input_image_size)
-        x = self.encoder(dummy_input)
-        
-        # Define feature dimensions
-        feature_dim = x.shape[1]
-        half_dim = feature_dim // 2
-        dim1 = feature_dim // 4
-        dim2 = feature_dim // 6
-        dim3 = feature_dim // 12
-        dim4 = feature_dim // 24
-        dim5 = feature_dim // 32
-        dim6 = feature_dim // 40
-
-        # Center
-        self.center = Decoder(feature_dim, int(feature_dim // 1.5), half_dim)
-
-        self.classification_head = nn.Sequential(
-            Decoder(half_dim, dim1, dim2),
-            Upsample(dim2, dim3, dim4),
-            Upsample(dim4, dim5, dim6),
-            Upsample(dim6, num_classes, num_classes),
-            nn.Upsample(
-              size=(input_image_size, input_image_size),
-              mode="bilinear",
-              align_corners=False,
-            ),
-            Conv2d(num_classes, num_classes, kernel_size=3, padding=1) # smooth output
-        )
-
-    def forward(self, image):
-        x = self.encoder(image)
-        x = self.center(x) 
-        x = self.classification_head(x)
-        return x
     
 class DenseNet_UNet(Module):
     """
@@ -261,6 +204,41 @@ class DenseNet_UNet(Module):
         x = self.classification_head(x)                
 
         return x
+
+class SegFormer(Module):
+    def __init__(self, num_classes=1, input_image_size=128, weights="nvidia/segformer-b2-finetuned-ade-512-512"):
+        super(SegFormer, self).__init__()
+        self.num_classes = num_classes
+        self.input_image_size = input_image_size
+
+        self.segformer = SegformerForSemanticSegmentation.from_pretrained(
+            weights,
+            num_labels=num_classes,
+            ignore_mismatched_sizes=True
+        )
+
+        output_feature_size = self.segformer.config.decoder_hidden_size
+
+        # Replace the decode head to upsample to input image size
+        self.segformer.decode_head.classifier = nn.Sequential( # type: ignore
+        nn.ConvTranspose2d(output_feature_size, output_feature_size // 2, kernel_size=4, stride=2, padding=1), 
+        nn.BatchNorm2d(output_feature_size // 2),
+        nn.ReLU(inplace=True),
+        nn.ConvTranspose2d(output_feature_size // 2, output_feature_size // 4, kernel_size=4, stride=2, padding=1),
+        nn.BatchNorm2d(output_feature_size // 4),
+        nn.ReLU(inplace=True),
+        nn.Conv2d(output_feature_size // 4, num_classes, kernel_size=3, padding=1),
+        nn.Upsample(
+            size=(input_image_size, input_image_size),
+            mode="bilinear",
+            align_corners=False,
+        )
+    )
+
+    def forward(self, image):
+        image = image[:, :3, :, :]
+        output = self.segformer(image)
+        return output.logits
 
 class ResNet_FC(Module):
     """
