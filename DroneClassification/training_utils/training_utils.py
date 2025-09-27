@@ -3,14 +3,36 @@ import matplotlib.pyplot as plt
 import torch
 from torch.utils.data import DataLoader
 import torch.nn as nn
-from torch.optim import Adam, AdamW
+from torch.optim import AdamW
 import torch.optim as optim
 from tqdm import tqdm
 from pathlib import Path
 import json
 import logging
 from datetime import datetime
-from typing import Callable, List, Optional, Union
+from typing import Callable, List, Optional, Union, Tuple
+from torch.amp.grad_scaler import GradScaler
+from torch.amp.autocast_mode import autocast
+
+def setup_device():
+    """
+    Sets up the device for training (GPU if available, else CPU).
+    Returns:
+        torch.device: The device to be used for training.
+    """
+    if torch.cuda.is_available():
+        DEVICE = torch.device("cuda")
+        print("Using CUDA device.")
+    elif torch.backends.mps.is_available():
+        DEVICE = torch.device("mps")
+        print("Using Apple Metal Performance Shaders (MPS) device.\n")
+    else:
+        DEVICE = torch.device("cpu")
+        print("WARNING: No GPU found. Defaulting to CPU.")
+
+    return DEVICE
+
+
 
 class TrainingSession:
     """ Initializes the training session with the model, data loaders, loss function, and training parameters.
@@ -25,8 +47,8 @@ class TrainingSession:
             device (torch.device, optional): Device to run the model on (CPU or GPU). If None, it will be set automatically.
             validation_dataset_names (List[str], optional): Names for the validation datasets. If None, datasets will be numbered.
             epoch_print_frequency (int, optional): Frequency of printing epoch information. Defaults to 1.
-            optimizer_type (str, optional): Type of optimizer to use ('adam', 'adamw', 'sgd'). Defaults to 'adamw'.
-            scheduler_type (str, optional): Type of learning rate scheduler ('cosine', 'step', 'plateau'). Defaults to 'cosine'.
+            optimizer (torch.optim.Optimizer, optional): Optimizer to use. If None, AdamW will be used.
+            scheduler (torch.optim.lr_scheduler._LRScheduler, optional): Learning rate scheduler. If None, CosineAnnealingLR will be used.
             weight_decay (float, optional): Weight decay for the optimizer. Defaults to 1e-4.
             experiment_name (str, optional): Name for the experiment. If None, a timestamped name will be generated.
             save_checkpoints (bool, optional): Whether to save model checkpoints. Defaults to True.
@@ -43,7 +65,7 @@ class TrainingSession:
             device (torch.device): Device on which the model is trained.
             model (nn.Module): The model being trained.
             multiple_test_loaders (bool): Indicates if multiple test loaders are used.
-       
+            scaler (GradScaler, optional): Gradient scaler for mixed precision training.
        """
 
     def __init__(self, model: nn.Module,
@@ -55,35 +77,30 @@ class TrainingSession:
                  device: Optional[torch.device] = None,
                  validation_dataset_names: Optional[List[str]] = None,
                  epoch_print_frequency: int = 1,
-                 optimizer_type: str = 'adamw',
-                 scheduler_type: str = 'cosine',
+                 optimizer: Optional[torch.optim.Optimizer] = None,
+                 scheduler: Optional[torch.optim.lr_scheduler._LRScheduler] = None,
                  weight_decay: float = 1e-4,
                  experiment_name: str = None, # type: ignore
                  save_checkpoints: bool = True):
         
-        # Device setup
-        if device is None:
-            self.device = self._setup_device()
-        else:
-            self.device = device
         self.model = model.to(self.device)
-
         self.trainLoader = trainLoader
         self.testLoader = testLoader
-        self.batch_size = trainLoader.batch_size if trainLoader.batch_size is not None else 1
+        self.lossFunc = lossFunc
         self.init_lr = init_lr
         self.num_epochs = num_epochs
-        self.lossFunc = lossFunc
-        self.training_loss = []
-        self.epoch_print_frequency = epoch_print_frequency
+        self.device = setup_device() if device is None else device
         self.validation_dataset_names = validation_dataset_names
-        
-        # Enhanced features
-        self.optimizer_type = optimizer_type
-        self.scheduler_type = scheduler_type
+        self.epoch_print_frequency = epoch_print_frequency
+        self.optimizer = optimizer if optimizer else AdamW(self.model.parameters(), lr=self.init_lr, weight_decay=weight_decay)
+        self.scheduler = scheduler if scheduler else optim.lr_scheduler.CosineAnnealingLR(self.optimizer, T_max=self.num_epochs)
         self.weight_decay = weight_decay
         self.save_checkpoints = save_checkpoints
         
+        self.scaler = GradScaler(device=self.device.type) if self.device.type in ['cuda', 'cpu'] else None
+        self.batch_size = trainLoader.batch_size if trainLoader.batch_size is not None else 1
+        self.training_loss = []
+
         # Multiple test loaders handling
         if isinstance(testLoader, list):
             self.multiple_test_loaders = True
@@ -94,10 +111,6 @@ class TrainingSession:
         else:
             self.multiple_test_loaders = False
             self.validation_metrics = self.num_epochs * [{}]
-
-        # Enhanced optimizer and scheduler
-        self.optimizer = self._create_optimizer()
-        self.scheduler = self._create_scheduler()
         
         # Best model tracking
         self.best_metric = 0.0
@@ -110,19 +123,226 @@ class TrainingSession:
             self.experiment_dir.mkdir(parents=True, exist_ok=True)
             self._setup_logging()
         
-    def _setup_device(self):
-        """device setup"""
-        if torch.cuda.is_available():
-            device = torch.device("cuda")
-            print(f"Using CUDA device: {torch.cuda.get_device_name()}")
-            print(f"GPU Memory: {torch.cuda.get_device_properties(0).total_memory / 1024**3:.1f} GB")
-        elif torch.backends.mps.is_available():
-            device = torch.device("mps")
-            print("Using Apple Metal Performance Shaders (MPS) device.")
+    
+    def learn(self) -> Tuple[List[float], List[Union[dict, List[dict]]]]:
+        """ Training with logging and checkpointing
+        
+            Returns:
+                List[float]: training loss for each epoch,
+                List[Union[dict, List[dict]]]: validation metrics for each epoch
+        """
+
+        if hasattr(self, 'logger'):
+            self.logger.info(f"Starting training: {self.num_epochs} epochs")
+            self.logger.info(f"Model parameters: {sum(p.numel() for p in self.model.parameters()):,}")
+        
+        training_loss = []
+        all_metrics = []
+        
+        for epoch in range(self.num_epochs):
+            # Training phase
+            epoch_loss = self._train_epoch(epoch)
+            training_loss.append(epoch_loss)
+            
+            # Validation phase
+            if isinstance(self.testLoader, list):
+                epoch_metrics = []
+                for i, loader in enumerate(self.testLoader):
+                    epoch_metrics.append(self.evaluate(loader))
+                all_metrics.append(epoch_metrics)
+                current_metric = epoch_metrics[-1].get('IOU', 0)
+                is_best = current_metric > self.best_metric
+            else:
+                metrics = self.evaluate(self.testLoader)
+                all_metrics.append(metrics)
+                current_metric = metrics.get('IOU', 0)
+                is_best = current_metric > self.best_metric
+            
+            if is_best:
+                self.best_metric = current_metric
+                self.best_epoch = epoch
+            
+            # Logging
+            if (epoch + 1) % self.epoch_print_frequency == 0 or epoch == 0:
+                self._log_epoch_results(epoch, epoch_loss, all_metrics[-1] if not isinstance(self.testLoader, list) else epoch_metrics)
+            
+            # Save checkpoint
+            self.save_checkpoint(epoch + 1, all_metrics[-1] if not isinstance(self.testLoader, list) else epoch_metrics, is_best) # type: ignore
+            
+            # Update scheduler
+            if isinstance(self.scheduler, optim.lr_scheduler.ReduceLROnPlateau):
+                self.scheduler.step(current_metric)
+            else:
+                self.scheduler.step()
+        
+        if hasattr(self, 'logger'):
+            self.logger.info(f"Training completed! Best metric: {self.best_metric:.4f} at epoch {self.best_epoch + 1}")
+        
+        return training_loss, all_metrics
+    
+    def _train_epoch(self, epoch):
+        """Train single epoch"""
+        self.model.train()
+        total_loss = 0
+        num_batches = len(self.trainLoader)
+        
+        pbar = tqdm(self.trainLoader, desc=f"Epoch {epoch+1}/{self.num_epochs}")
+        for batch_idx, (x, y) in enumerate(pbar):
+            
+            # Forward pass
+            x, y = x.to(self.device, non_blocking=True), y.to(self.device, non_blocking=True)
+            self.optimizer.zero_grad(set_to_none=True)
+            if self.scaler:
+                with autocast(device_type=self.device.type):
+                    pred = self.model(x)
+                    if isinstance(pred, tuple):
+                        pred = pred[0]
+                    loss = self.lossFunc(pred, y)
+                self.scaler.scale(loss).backward()
+                self.scaler.step(self.optimizer)
+                self.scaler.update()
+            else:
+                pred = self.model(x)
+                self.optimizer.step()
+                loss = self.lossFunc(pred, y)
+                loss.backward()
+            if isinstance(pred, tuple):
+                pred = pred[0]
+            
+            # Gather loss
+            total_loss += loss.item()
+            
+            # Print progress
+            pbar.set_postfix({'loss': f'{loss.item():.4f}', 'lr': f'{self.optimizer.param_groups[0]["lr"]:.6f}'})
+        
+        return total_loss / num_batches
+    
+    @torch.no_grad()
+    def evaluate(self, dataloader) -> dict:
+        """ evaluation with comprehensive metrics"""
+        self.model.eval()
+        total_loss = 0
+        all_metrics = {}
+        
+        for x, y in dataloader:
+            x, y = x.to(self.device), y.to(self.device)
+            if self.scaler:
+                with autocast(device_type=self.device.type):
+                    pred = self.model(x)
+            else:
+                pred = self.model(x)
+            if isinstance(pred, tuple):
+                pred = pred[0]
+            
+            metrics = self._calculate_segmentation_metrics(pred, y)
+            loss = self.lossFunc(pred, y)
+            total_loss += loss.item()
+            
+            for key, value in metrics.items():
+                if key in all_metrics:
+                    if key.startswith('class_'):
+                        all_metrics[key] = [a + b for a, b in zip(all_metrics[key], value)]
+                    else:
+                        all_metrics[key] += value
+                else:
+                    all_metrics[key] = value
+
+        # Average metrics
+        for key in all_metrics:
+            if key.startswith('class_'):
+                all_metrics[key] = [v / len(dataloader) for v in all_metrics[key]]
+            else:
+                all_metrics[key] /= len(dataloader)
+        
+        all_metrics['Loss'] = total_loss / len(dataloader)
+        return all_metrics
+
+    def _calculate_segmentation_metrics(self, predictions, targets):
+        """Calculate basic segmentation metrics"""
+        # Ensure predictions always have shape [B, C, H, W]
+        if predictions.dim() == 3:
+            predictions = predictions.unsqueeze(1)  # [B, H, W] -> [B,1,H,W]
+
+        if predictions.shape[1] == 1:
+            # Binary segmentation -> sigmoid + threshold
+            pred_classes = (torch.sigmoid(predictions) > 0.5).long().squeeze(1)  # [B,H,W]
         else:
-            device = torch.device("cpu")
-            print("WARNING: No GPU found. Using CPU.")
-        return device
+            # Multi-class segmentation -> argmax
+            pred_classes = torch.argmax(predictions, dim=1)  # [B,H,W]
+
+        # Targets should end up as [B,H,W] with class indices
+        if targets.dim() == 4:
+            if targets.shape[1] == 1:
+                # [B,1,H,W] -> [B,H,W]
+                targets = targets.squeeze(1)
+            else:
+                # One-hot encoded [B,C,H,W] -> [B,H,W] class indices
+                targets = torch.argmax(targets, dim=1)
+
+        # Flatten tensors
+        pred_flat = pred_classes.flatten()
+        target_flat = targets.flatten()
+        
+        # Handle ignore index (common values: 255, -1)
+        ignore_index = getattr(self.lossFunc, 'ignore_index', None)
+        if ignore_index is not None and ignore_index != -100:  # -100 is default (no ignore)
+            mask = target_flat != ignore_index
+            pred_flat = pred_flat[mask]
+            target_flat = target_flat[mask]
+        
+        
+        # Overall pixel accuracy
+        pixel_accuracy = (pred_flat == target_flat).float().mean().item()
+        
+        # Per-class metrics
+        num_classes = predictions.shape[1]
+        class_ious = np.zeros(num_classes)
+        class_precisions = np.zeros(num_classes)
+        class_recalls = np.zeros(num_classes)
+        
+        eps = 1e-8  # Avoid division by zero
+        
+        for class_id in range(num_classes):
+            # Binary masks for current class
+            pred_mask = (pred_flat == class_id)
+            target_mask = (target_flat == class_id)
+            
+            # Calculate intersection and union
+            tp = (pred_mask & target_mask).sum().float()
+            fp = (pred_mask & ~target_mask).sum().float()
+            fn = (~pred_mask & target_mask).sum().float()
+            
+            # Metrics for this class
+            precision = tp / (tp + fp + eps)
+            recall = tp / (tp + fn + eps)
+            iou = tp / (tp + fp + fn + eps)
+            
+            class_precisions[class_id] = precision.item()
+            class_recalls[class_id] = recall.item()
+            class_ious[class_id] = iou.item()
+        
+        # Aggregate metrics
+        mean_precision = np.mean(class_precisions).item()
+        mean_recall = np.mean(class_recalls).item()
+        mean_iou = np.mean(class_ious).item()
+        
+        if len(class_ious) == 1:
+            return {
+                'Pixel_Accuracy': pixel_accuracy,
+                'Precision': mean_precision,
+                'Recall': mean_recall,
+                'IOU': mean_iou,
+            }
+        
+        return {
+            'Pixel_Accuracy': pixel_accuracy,
+            'Precision': mean_precision,
+            'Recall': mean_recall,
+            'IOU': mean_iou,
+            'class_ious': class_ious,
+            'class_precisions': class_precisions,
+            'class_recalls': class_recalls
+        }
     
     def _setup_logging(self):
         """Setup experiment logging"""
@@ -140,8 +360,9 @@ class TrainingSession:
         # Save configuration
         config = {
             'model': str(self.model.__class__.__name__),
-            'optimizer': self.optimizer_type,
-            'scheduler': self.scheduler_type,
+            'Loss Function': str(self.lossFunc.__class__.__name__),
+            'optimizer': self.optimizer.__class__.__name__,
+            'scheduler': self.scheduler.__class__.__name__,
             'learning_rate': self.init_lr,
             'weight_decay': self.weight_decay,
             'batch_size': self.batch_size,
@@ -151,28 +372,6 @@ class TrainingSession:
         
         with open(self.experiment_dir / 'config.json', 'w') as f:
             json.dump(config, f, indent=2)
-    
-    def _create_optimizer(self):
-        """Create optimizer based on type"""
-        if self.optimizer_type.lower() == 'adamw':
-            return AdamW(self.model.parameters(), lr=self.init_lr, weight_decay=self.weight_decay)
-        elif self.optimizer_type.lower() == 'adam':
-            return Adam(self.model.parameters(), lr=self.init_lr, weight_decay=self.weight_decay)
-        elif self.optimizer_type.lower() == 'sgd':
-            return optim.SGD(self.model.parameters(), lr=self.init_lr, weight_decay=self.weight_decay, momentum=0.9)
-        else:
-            return Adam(self.model.parameters(), lr=self.init_lr)
-    
-    def _create_scheduler(self):
-        """Create learning rate scheduler"""
-        if self.scheduler_type.lower() == 'cosine':
-            return optim.lr_scheduler.CosineAnnealingLR(self.optimizer, T_max=self.num_epochs)
-        elif self.scheduler_type.lower() == 'step':
-            return optim.lr_scheduler.StepLR(self.optimizer, step_size=self.num_epochs//3, gamma=0.1)
-        elif self.scheduler_type.lower() == 'plateau':
-            return optim.lr_scheduler.ReduceLROnPlateau(self.optimizer, patience=5, factor=0.5)
-        else:
-            return optim.lr_scheduler.ConstantLR(self.optimizer, factor=1.0)
     
     def save_checkpoint(self, epoch, metrics, is_best=False):
         """Save model checkpoint"""
@@ -205,6 +404,15 @@ class TrainingSession:
     
     def load_checkpoint(self, path):
         """Load model checkpoint"""
+        torch.serialization.add_safe_globals([
+            np.dtype,
+            np.generic,
+            np.float64,
+            np.int64,
+            np.dtypes.Float64DType,
+            np._core.multiarray.scalar, # type: ignore
+        ])
+
         checkpoint = torch.load(path, map_location=self.device)
         self.model.load_state_dict(checkpoint['model_state_dict'])
         self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
@@ -212,224 +420,14 @@ class TrainingSession:
             self.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
         return checkpoint['epoch'], checkpoint.get('metrics', {})
     
-    def learn(self):
-        """Enhanced training loop"""
-        self.training_loss, self.validation_metrics = self._train()
+    def load_model_weights(self, path):
+        """Load only model weights from file"""
+        self.model.load_state_dict(torch.load(path, map_location=self.device, weights_only=True))
+
+    def save_model(self, path):
+        """Save only model weights to file"""
+        torch.save(self.model.state_dict(), path)
     
-    def _train(self):
-        """Enhanced training with better logging and checkpointing"""
-
-        self.optimizer = self._create_optimizer()
-        self.scheduler = self._create_scheduler()
-
-        if hasattr(self, 'logger'):
-            self.logger.info(f"Starting training: {self.num_epochs} epochs")
-            self.logger.info(f"Model parameters: {sum(p.numel() for p in self.model.parameters()):,}")
-        
-        training_loss = []
-        all_metrics = []
-        
-        for epoch in range(self.num_epochs):
-            # Training phase
-            epoch_loss = self._train_epoch(epoch)
-            training_loss.append(epoch_loss)
-            
-            # Validation phase
-            if isinstance(self.testLoader, list):
-                epoch_metrics = []
-                for i, loader in enumerate(self.testLoader):
-                    epoch_metrics.append(self._evaluate(loader))
-                all_metrics.append(epoch_metrics)
-                
-                # Check for best model
-                avg_metric = np.mean([m.get('IOU', 0) for m in epoch_metrics])
-                is_best = avg_metric > self.best_metric
-                if is_best:
-                    self.best_metric = avg_metric
-                    self.best_epoch = epoch
-                
-            else:
-                metrics = self._evaluate(self.testLoader)
-                all_metrics.append(metrics)
-                
-                # Check for best model
-                current_metric = metrics.get('IOU', 0)
-                is_best = current_metric > self.best_metric
-                if is_best:
-                    self.best_metric = current_metric
-                    self.best_epoch = epoch
-            
-            # Logging
-            if (epoch + 1) % self.epoch_print_frequency == 0 or epoch == 0:
-                self._log_epoch_results(epoch, epoch_loss, all_metrics[-1] if not isinstance(self.testLoader, list) else epoch_metrics)
-            
-            # Save checkpoint
-            self.save_checkpoint(epoch + 1, all_metrics[-1] if not isinstance(self.testLoader, list) else epoch_metrics, is_best) # type: ignore
-            
-            # Update scheduler
-            if isinstance(self.scheduler, optim.lr_scheduler.ReduceLROnPlateau):
-                self.scheduler.step(current_metric if not isinstance(self.testLoader, list) else avg_metric)
-            else:
-                self.scheduler.step()
-        
-        if hasattr(self, 'logger'):
-            self.logger.info(f"Training completed! Best metric: {self.best_metric:.4f} at epoch {self.best_epoch + 1}")
-        
-        return training_loss, all_metrics
-    
-    def _train_epoch(self, epoch):
-        """Train single epoch with enhanced features"""
-        self.model.train()
-        total_loss = 0
-        num_batches = len(self.trainLoader)
-        
-        pbar = tqdm(self.trainLoader, desc=f"Epoch {epoch+1}/{self.num_epochs}")
-        for batch_idx, (x, y) in enumerate(pbar):
-            x, y = x.to(self.device, non_blocking=True), y.to(self.device, non_blocking=True)
-            
-            # Forward pass
-            self.optimizer.zero_grad()
-            pred = self.model(x)
-            if isinstance(pred, tuple):
-                pred = pred[0]
-            
-            loss = self.lossFunc(pred, y)
-            
-            # Backward pass
-            loss.backward()
-            self.optimizer.step()
-            
-            total_loss += loss.item()
-            pbar.set_postfix({'loss': f'{loss.item():.4f}', 'lr': f'{self.optimizer.param_groups[0]["lr"]:.6f}'})
-        
-        return total_loss / num_batches
-    
-    @torch.no_grad()
-    def _evaluate(self, dataloader):
-        """ evaluation with comprehensive metrics"""
-        self.model.eval()
-        total_loss = 0
-        all_metrics = {}
-        
-        for x, y in dataloader:
-            x, y = x.to(self.device, non_blocking=True), y.to(self.device, non_blocking=True)
-            pred = self.model(x)
-            if isinstance(pred, tuple):
-                pred = pred[0]
-            
-            loss = self.lossFunc(pred, y)
-            total_loss += loss.item()
-            metrics = self._calculate_segmentation_metrics(pred, y)
-
-            for k, v in metrics.items():
-                if k not in all_metrics:
-                    all_metrics[k] = []
-                all_metrics[k].append(v)
-    
-        # Calculate comprehensive metrics
-        for k, v in all_metrics.items():
-            if k.startswith('class_'):
-                metrics_list = np.mean(v, axis=0)
-                all_metrics[k] = [round(float(item), 4) for item in metrics_list]
-            else:
-                all_metrics[k] = round(float(np.mean(v)), 4)
-
-        all_metrics['Loss'] = round(total_loss / len(dataloader), 4)
-        return all_metrics
-
-    
-    @torch.no_grad()
-    def _calculate_segmentation_metrics(self, predictions, targets):
-        """Calculate basic segmentation metrics"""
-        
-        # Get predicted classes
-        pred_classes = torch.argmax(predictions, dim=1) if predictions.dim() == 4 else predictions
-        
-        # Squeeze targets
-        if targets.dim() == 4:
-            targets = targets.squeeze(1) if targets.shape[1] == 1 else torch.argmax(targets, dim=1)
-
-        # Determine number of classes
-        num_classes = predictions.shape[1] if predictions.dim() == 4 else max(int(targets.max()) + 1, int(pred_classes.max()) + 1)
-        
-        # Handle ignore index
-        ignore_index = getattr(self.lossFunc, 'ignore_index', None)
-        if ignore_index is not None and ignore_index != -100:
-            valid_mask = targets != ignore_index
-            pred_classes = pred_classes[valid_mask]
-            targets = targets[valid_mask]
-        
-        # Flatten tensors
-        pred_flat = pred_classes.reshape(-1)
-        target_flat = targets.reshape(-1)
-        
-        # Calculate pixel accuracy
-        pixel_accuracy = (pred_flat == target_flat).float().mean().item()
-        
-        eps = 1e-8
-        
-        if num_classes > 1:
-            # Vectorized per-class metrics using confusion matrix approach
-            # Create one-hot encodings efficiently
-            pred_onehot = torch.nn.functional.one_hot(pred_flat, num_classes).bool()
-            target_onehot = torch.nn.functional.one_hot(target_flat, num_classes).bool()
-            
-            # Compute TP, FP, FN for all classes
-            tp = (pred_onehot & target_onehot).sum(dim=0).float()
-            fp = (pred_onehot & ~target_onehot).sum(dim=0).float()
-            fn = (~pred_onehot & target_onehot).sum(dim=0).float()
-            
-            # Compute all metrics
-            precisions = (tp / (tp + fp + eps)).cpu().numpy()
-            recalls = (tp / (tp + fn + eps)).cpu().numpy()
-            ious = (tp / (tp + fp + fn + eps)).cpu().numpy()
-            
-            return {
-                'Pixel_Accuracy': pixel_accuracy,
-                'Precision': float(precisions.mean()),
-                'Recall': float(recalls.mean()),
-                'IOU': float(ious.mean()),
-                'class_ious': ious,
-                'class_precisions': precisions,
-                'class_recalls': recalls
-            }
-        else: # Binary case - calculate for the positive class (class 1)
-            has_positive_pred = (pred_flat == 1).any()
-            has_positive_target = (target_flat == 1).any()
-            
-            if not has_positive_pred and not has_positive_target:
-                # No positive class in predictions or targets - perfect negative prediction
-                precision = 1.0
-                recall = 1.0
-                iou = 1.0
-            elif not has_positive_target:
-                # No positive in target but model predicted positive - all false positives
-                precision = 0.0
-                recall = 1.0  # Undefined, but set to 1 (no positives to recall)
-                iou = 0.0
-            elif not has_positive_pred:
-                # Target has positives but model predicted none - all false negatives
-                precision = 1.0  # Undefined, but set to 1 (no predictions to be wrong)
-                recall = 0.0
-                iou = 0.0
-            else:
-                # Normal case - both classes present
-                pred_mask = pred_flat == 1
-                target_mask = target_flat == 1
-                
-                tp = (pred_mask & target_mask).sum().float()
-                fp = (pred_mask & ~target_mask).sum().float()
-                fn = (~pred_mask & target_mask).sum().float()
-                
-                precision = (tp / (tp + fp + eps)).item()
-                recall = (tp / (tp + fn + eps)).item()
-                iou = (tp / (tp + fp + fn + eps)).item()
-            return {
-                'Pixel_Accuracy': pixel_accuracy,
-                'Precision': precision,
-                'Recall': recall,
-                'IOU': iou
-            }
 
     def _log_epoch_results(self, epoch, train_loss, val_metrics):
         """Enhanced logging of epoch results"""
@@ -559,26 +557,6 @@ class TrainingSession:
         if hasattr(self, 'experiment_dir') and self.save_checkpoints:
             plt.savefig(self.experiment_dir / 'training_loss.png', dpi=150, bbox_inches='tight')
         plt.show()
-
-
-def setup_device():
-    """
-    Sets up the device for training (GPU if available, else CPU).
-    Returns:
-        torch.device: The device to be used for training.
-    """
-    if torch.cuda.is_available():
-        DEVICE = torch.device("cuda")
-        print("Using CUDA device.")
-    elif torch.backends.mps.is_available():
-        DEVICE = torch.device("mps")
-        print("Using Apple Metal Performance Shaders (MPS) device.\n")
-    else:
-        DEVICE = torch.device("cpu")
-        print("WARNING: No GPU found. Defaulting to CPU.")
-
-    return DEVICE
-
 
 def calculate_class_weights(labels_path, classes, power=2.0):
     num_classes = len(classes)
