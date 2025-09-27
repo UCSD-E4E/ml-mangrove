@@ -16,15 +16,13 @@ class LandmassLoss(nn.Module):
         super(LandmassLoss, self).__init__()
     def forward(self, prediction, target):
         return (prediction.sum() - target.sum()) / (target.sum() + 1)
-
 class JaccardLoss(nn.Module):
     """
     Jaccard Loss (IoU Loss) for segmentation
     
     This loss directly optimizes the Intersection over Union metric
     """
-    
-    def __init__(self, num_classes, ignore_index=255, smooth=1e-6, weight=None):
+    def __init__(self, num_classes=1, ignore_index=255, smooth=1e-6, weight=None):
         """
         Args:
             num_classes: Number of segmentation classes
@@ -42,28 +40,53 @@ class JaccardLoss(nn.Module):
         """
         Args:
             predictions: [B, C, H, W] - model logits
-            targets: [B, H, W] - ground truth class indices
+            targets: [B, H, W] or [B, 1, H, W] - ground truth class indices
         """
-        # Apply softmax to get probabilities
-        predictions = F.softmax(predictions, dim=1)
+        
+        # Normalize target shape first
+        if targets.dim() == 4 and targets.shape[1] == 1:
+            targets = targets.squeeze(1)  # [B, 1, H, W] -> [B, H, W]
         
         if self.num_classes > 1:
-            # Create one-hot encoding for targets
-            targets = F.one_hot(targets, num_classes=self.num_classes).permute(0, 3, 1, 2).float()
-        if len(targets.shape) == 3:
-            targets = targets.unsqueeze(1)
+            # Multi-class case
+            predictions = F.softmax(predictions, dim=1)  # [B, C, H, W]
+            targets_onehot = F.one_hot(targets, num_classes=self.num_classes).permute(0, 3, 1, 2).float()  # [B, C, H, W]
+            
+            # Handle ignore_index
+            if self.ignore_index is not None:
+                mask = (targets != self.ignore_index).float().unsqueeze(1)  # [B, 1, H, W]
+                predictions = predictions * mask
+                targets_onehot = targets_onehot * mask
+            
+            # Calculate intersection and union
+            intersection = (predictions * targets_onehot).sum(dim=(2, 3))  # [B, C]
+            union = predictions.sum(dim=(2, 3)) + targets_onehot.sum(dim=(2, 3)) - intersection
+            
+        else:
+            # Binary case
+            if predictions.shape[1] == 2:
+                predictions = F.softmax(predictions, dim=1)[:, 1]  # [B, H, W]
+            else:
+                predictions = torch.sigmoid(predictions.squeeze(1))  # [B, H, W]
+            
+            # Ensure targets is float and same shape as predictions [B, H, W]
+            targets = targets.float()
+            
+            # Handle ignore_index
+            if self.ignore_index is not None:
+                mask = (targets != self.ignore_index).float()  # [B, H, W]
+                predictions = predictions * mask
+                targets = targets * mask
+            
+            # Add channel dimension for consistent operations
+            predictions = predictions.unsqueeze(1)  # [B, 1, H, W]
+            targets = targets.unsqueeze(1)  # [B, 1, H, W]
+            
+            # Calculate intersection and union
+            intersection = (predictions * targets).sum(dim=(2, 3))  # [B, 1]
+            union = predictions.sum(dim=(2, 3)) + targets.sum(dim=(2, 3)) - intersection  # [B, 1]
         
-        # Handle ignore_index
-        if self.ignore_index is not None:
-            mask = (targets != self.ignore_index).float().unsqueeze(1)
-            predictions = predictions * mask
-            targets = targets * mask
-        
-        # Calculate intersection and union for each class
-        intersection = (predictions * targets).sum(dim=(2, 3))
-        union = predictions.sum(dim=(2, 3)) + targets.sum(dim=(2, 3)) - intersection
-        
-        # Calculate IoU for each class
+        # Calculate IoU
         iou = (intersection + self.smooth) / (union + self.smooth)
         
         # Apply class weights if provided
@@ -72,6 +95,63 @@ class JaccardLoss(nn.Module):
         
         # Return 1 - mean IoU as loss
         return 1 - iou.mean()
+    
+class FocalJaccardLoss(nn.Module):
+    """
+    Focal Jaccard Loss - focuses on hard examples by applying a focal term to the Jaccard loss
+    """
+    def __init__(self, num_classes=1, ignore_index=255, smooth=1e-6):
+        super(FocalJaccardLoss, self).__init__()
+        self.jaccard_loss = JaccardLoss(num_classes, ignore_index, smooth)
+        self.focal = FocalTverskyLoss(alpha=0.7, beta=0.3, gamma=0.75, smooth=smooth)
+        
+    def forward(self, predictions, targets):
+        jaccard = self.jaccard_loss(predictions, targets)
+        focal = self.focal(predictions, targets)
+        focal_jaccard = 0.6 * jaccard + 0.4 * focal
+        return focal_jaccard
+    
+class FocalTverskyLoss(nn.Module):
+    """
+    Focal Tversky Loss - excellent for punishing false negatives
+    alpha controls FP vs FN trade-off
+    gamma controls focus on hard examples
+    """
+    def __init__(self, alpha=0.7, beta=0.3, gamma=0.75, smooth=1e-6):
+        super().__init__()
+        self.alpha = alpha  # Weight for FN (higher = punish FN more)
+        self.beta = beta    # Weight for FP (should be 1-alpha)
+        self.gamma = gamma  # Focal parameter
+        self.smooth = smooth
+        
+    def forward(self, predictions, targets):
+        if targets.dim() == 4 and targets.shape[1] == 1:
+            targets = targets.squeeze(1)
+        
+        # Get probabilities
+        if predictions.shape[1] == 2:
+            preds = F.softmax(predictions, dim=1)[:, 1]
+        else:
+            preds = torch.sigmoid(predictions.squeeze(1))
+        
+        targets = targets.float()
+        
+        # Flatten
+        preds = preds.view(-1)
+        targets = targets.view(-1)
+        
+        # Calculate Tversky components
+        tp = (preds * targets).sum()
+        fp = (preds * (1 - targets)).sum()
+        fn = ((1 - preds) * targets).sum()
+        
+        # Tversky Index
+        tversky = (tp + self.smooth) / (tp + self.alpha * fn + self.beta * fp + self.smooth)
+        
+        # Focal Tversky Loss
+        focal_tversky = (1 - tversky) ** self.gamma
+        
+        return focal_tversky
 
 class PerceptualLoss(nn.Module):
     def __init__(self):
