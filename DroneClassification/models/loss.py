@@ -47,18 +47,21 @@ class JaccardLoss(nn.Module):
         # Apply softmax to get probabilities
         predictions = F.softmax(predictions, dim=1)
         
-        # Create one-hot encoding for targets
-        targets_one_hot = F.one_hot(targets, num_classes=self.num_classes).permute(0, 3, 1, 2).float()
+        if self.num_classes > 1:
+            # Create one-hot encoding for targets
+            targets = F.one_hot(targets, num_classes=self.num_classes).permute(0, 3, 1, 2).float()
+        if len(targets.shape) == 3:
+            targets = targets.unsqueeze(1)
         
         # Handle ignore_index
         if self.ignore_index is not None:
             mask = (targets != self.ignore_index).float().unsqueeze(1)
             predictions = predictions * mask
-            targets_one_hot = targets_one_hot * mask
+            targets = targets * mask
         
         # Calculate intersection and union for each class
-        intersection = (predictions * targets_one_hot).sum(dim=(2, 3))
-        union = predictions.sum(dim=(2, 3)) + targets_one_hot.sum(dim=(2, 3)) - intersection
+        intersection = (predictions * targets).sum(dim=(2, 3))
+        union = predictions.sum(dim=(2, 3)) + targets.sum(dim=(2, 3)) - intersection
         
         # Calculate IoU for each class
         iou = (intersection + self.smooth) / (union + self.smooth)
