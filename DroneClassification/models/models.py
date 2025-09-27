@@ -4,6 +4,7 @@ import numpy as np
 from torch.nn import Conv2d, Module
 from torchgeo.models import resnet18, get_weight
 import torchvision
+from torchvision import transforms
 from torchvision.models import densenet121, DenseNet121_Weights
 from torchvision.models import resnet18 as tv_resnet18
 from transformers import SegformerForSemanticSegmentation
@@ -129,20 +130,20 @@ class DenseNet_UNet(Module):
             param.requires_grad = False
         
         self.layer1 = nn.Sequential(
-            densenet.features.conv0,
-            densenet.features.norm0,
-            densenet.features.relu0,
-            densenet.features.pool0,
-            densenet.features.denseblock1,
-            densenet.features.transition1
+            densenet.features.conv0, # type: ignore
+            densenet.features.norm0, # type: ignore
+            densenet.features.relu0, # type: ignore
+            densenet.features.pool0, # type: ignore
+            densenet.features.denseblock1, # type: ignore
+            densenet.features.transition1 # type: ignore
         )
         self.layer2 = nn.Sequential(
-            densenet.features.denseblock2,
-            densenet.features.transition2
+            densenet.features.denseblock2, # type: ignore
+            densenet.features.transition2 # type: ignore
         )
         self.layer3 = nn.Sequential(
-            densenet.features.denseblock3, 
-            densenet.features.transition3
+            densenet.features.denseblock3, # type: ignore
+            densenet.features.transition3 # type: ignore
         )
         self.layer4 = densenet.features.denseblock4 # Depth 1024 here (vs. ResNet 512)
         
@@ -150,7 +151,7 @@ class DenseNet_UNet(Module):
         x = self.layer1(dummy_input) 
         x = self.layer2(x)
         x = self.layer3(x) 
-        x = self.layer4(x)
+        x = self.layer4(x) # type: ignore
         
         # Define feature dimensions
         feature_dim = x.shape[1] 
@@ -190,7 +191,7 @@ class DenseNet_UNet(Module):
         x1 = self.layer1(image)
         x2 = self.layer2(x1)
         x3 = self.layer3(x2)
-        x4 = self.layer4(x3)
+        x4 = self.layer4(x3) # type: ignore
         
         # Center
         x = self.center(x4) 
@@ -206,6 +207,13 @@ class DenseNet_UNet(Module):
         return x
 
 class SegFormer(Module):
+    """
+    SegFormer model for semantic segmentation.
+    Uses a pretrained SegFormer backbone and replaces the decode head to upsample to the input image size.
+    
+    https://github.com/NVlabs/SegFormer
+    
+    """
     def __init__(self, num_classes=1, input_image_size=128, weights="nvidia/segformer-b2-finetuned-ade-512-512"):
         super(SegFormer, self).__init__()
         self.num_classes = num_classes
@@ -216,6 +224,9 @@ class SegFormer(Module):
             num_labels=num_classes,
             ignore_mismatched_sizes=True
         )
+
+        for param in self.segformer.parameters():
+            param.requires_grad = False
 
         output_feature_size = self.segformer.config.decoder_hidden_size
 
@@ -228,17 +239,31 @@ class SegFormer(Module):
         nn.BatchNorm2d(output_feature_size // 4),
         nn.ReLU(inplace=True),
         nn.Conv2d(output_feature_size // 4, num_classes, kernel_size=3, padding=1),
-        nn.Upsample(
-            size=(input_image_size, input_image_size),
-            mode="bilinear",
-            align_corners=False,
-        )
     )
+        
+        for param in self.segformer.decode_head.classifier.parameters(): # type: ignore
+            param.requires_grad = True
 
     def forward(self, image):
-        image = image[:, :3, :, :]
-        output = self.segformer(image)
-        return output.logits
+        if image.shape[1] > 3:
+            image = image[:, :3, :, :]
+        
+        output = self.segformer(image).logits
+        
+        if output.shape[2] != image.shape[2] or output.shape[3] != image.shape[3]:
+            output = nn.functional.interpolate(output, size=(image.shape[2], image.shape[3]), mode="bilinear", align_corners=False)
+        return output
+    
+    def freeze_backbone(self):
+        for param in self.segformer.parameters():
+            param.requires_grad = False
+        for param in self.segformer.decode_head.classifier.parameters(): # type: ignore
+            param.requires_grad = True
+    
+    def train_backbone(self):
+        for param in self.segformer.parameters():
+            param.requires_grad = True
+
 
 class ResNet_FC(Module):
     """
