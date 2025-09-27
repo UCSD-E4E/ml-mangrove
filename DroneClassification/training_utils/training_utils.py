@@ -304,104 +304,133 @@ class TrainingSession:
         
         return total_loss / num_batches
     
+    @torch.no_grad()
     def _evaluate(self, dataloader):
         """ evaluation with comprehensive metrics"""
         self.model.eval()
         total_loss = 0
-        all_predictions = []
-        all_targets = []
+        all_metrics = {}
         
-        with torch.no_grad():
-            for x, y in dataloader:
-                x, y = x.to(self.device), y.to(self.device)
-                
-                pred = self.model(x)
-                if isinstance(pred, tuple):
-                    pred = pred[0]
-                
-                loss = self.lossFunc(pred, y)
-                total_loss += loss.item()
-                
-                # Collect for metrics calculation
-                all_predictions.append(pred.cpu())
-                all_targets.append(y.cpu())
-        
-        # Calculate comprehensive metrics
-        all_predictions = torch.cat(all_predictions)
-        all_targets = torch.cat(all_targets)
-        metrics = self._calculate_segmentation_metrics(all_predictions, all_targets)
-        metrics['Loss'] = total_loss / len(dataloader)
-        return metrics
+        for x, y in dataloader:
+            x, y = x.to(self.device, non_blocking=True), y.to(self.device, non_blocking=True)
+            pred = self.model(x)
+            if isinstance(pred, tuple):
+                pred = pred[0]
+            
+            loss = self.lossFunc(pred, y)
+            total_loss += loss.item()
+            metrics = self._calculate_segmentation_metrics(pred, y)
 
+            for k, v in metrics.items():
+                if k not in all_metrics:
+                    all_metrics[k] = []
+                all_metrics[k].append(v)
+    
+        # Calculate comprehensive metrics
+        for k, v in all_metrics.items():
+            if k.startswith('class_'):
+                metrics_list = np.mean(v, axis=0)
+                all_metrics[k] = [round(float(item), 4) for item in metrics_list]
+            else:
+                all_metrics[k] = round(float(np.mean(v)), 4)
+
+        all_metrics['Loss'] = round(total_loss / len(dataloader), 4)
+        return all_metrics
+
+    
+    @torch.no_grad()
     def _calculate_segmentation_metrics(self, predictions, targets):
-        """Calculate basic segmentation metrics without external calculator"""
+        """Calculate basic segmentation metrics"""
         
         # Get predicted classes
         pred_classes = torch.argmax(predictions, dim=1) if predictions.dim() == 4 else predictions
         
-        # Flatten tensors
-        pred_flat = pred_classes.flatten()
-        target_flat = targets.flatten()
-        
-        # Handle ignore index (common values: 255, -1)
-        ignore_index = getattr(self.lossFunc, 'ignore_index', None)
-        if ignore_index is not None and ignore_index != -100:  # -100 is default (no ignore)
-            mask = target_flat != ignore_index
-            pred_flat = pred_flat[mask]
-            target_flat = target_flat[mask]
-        
+        # Squeeze targets
+        if targets.dim() == 4:
+            targets = targets.squeeze(1) if targets.shape[1] == 1 else torch.argmax(targets, dim=1)
+
         # Determine number of classes
-        if predictions.dim() == 4:
-            num_classes = predictions.shape[1]
-        else:
-            num_classes = max(int(target_flat.max()) + 1, int(pred_flat.max()) + 1)
+        num_classes = predictions.shape[1] if predictions.dim() == 4 else max(int(targets.max()) + 1, int(pred_classes.max()) + 1)
         
-        # Overall pixel accuracy
+        # Handle ignore index
+        ignore_index = getattr(self.lossFunc, 'ignore_index', None)
+        if ignore_index is not None and ignore_index != -100:
+            valid_mask = targets != ignore_index
+            pred_classes = pred_classes[valid_mask]
+            targets = targets[valid_mask]
+        
+        # Flatten tensors
+        pred_flat = pred_classes.reshape(-1)
+        target_flat = targets.reshape(-1)
+        
+        # Calculate pixel accuracy
         pixel_accuracy = (pred_flat == target_flat).float().mean().item()
         
-        # Per-class metrics
-        class_ious = []
-        class_precisions = []
-        class_recalls = []
+        eps = 1e-8
         
-        eps = 1e-8  # Avoid division by zero
-        
-        for class_id in range(num_classes):
-            # Binary masks for current class
-            pred_mask = (pred_flat == class_id)
-            target_mask = (target_flat == class_id)
+        if num_classes > 1:
+            # Vectorized per-class metrics using confusion matrix approach
+            # Create one-hot encodings efficiently
+            pred_onehot = torch.nn.functional.one_hot(pred_flat, num_classes).bool()
+            target_onehot = torch.nn.functional.one_hot(target_flat, num_classes).bool()
             
-            # Calculate intersection and union
-            tp = (pred_mask & target_mask).sum().float()
-            fp = (pred_mask & ~target_mask).sum().float()
-            fn = (~pred_mask & target_mask).sum().float()
+            # Compute TP, FP, FN for all classes
+            tp = (pred_onehot & target_onehot).sum(dim=0).float()
+            fp = (pred_onehot & ~target_onehot).sum(dim=0).float()
+            fn = (~pred_onehot & target_onehot).sum(dim=0).float()
             
-            # Metrics for this class
-            precision = tp / (tp + fp + eps)
-            recall = tp / (tp + fn + eps)
-            iou = tp / (tp + fp + fn + eps)
+            # Compute all metrics
+            precisions = (tp / (tp + fp + eps)).cpu().numpy()
+            recalls = (tp / (tp + fn + eps)).cpu().numpy()
+            ious = (tp / (tp + fp + fn + eps)).cpu().numpy()
             
-            class_precisions.append(precision.item())
-            class_recalls.append(recall.item())
-            class_ious.append(iou.item())
-        
-        # Aggregate metrics
-        mean_precision = np.mean(class_precisions).item()
-        mean_recall = np.mean(class_recalls).item()
-        mean_iou = np.mean(class_ious).item()
-        
-        return {
-            'Pixel_Accuracy': pixel_accuracy,
-            'Precision': mean_precision,
-            'Recall': mean_recall,
-            'IOU': mean_iou,
-            'Mean_Precision': mean_precision,
-            'Mean_Recall': mean_recall,
-            'class_ious': class_ious,
-            'class_precisions': class_precisions,
-            'class_recalls': class_recalls
-        }
-    
+            return {
+                'Pixel_Accuracy': pixel_accuracy,
+                'Precision': float(precisions.mean()),
+                'Recall': float(recalls.mean()),
+                'IOU': float(ious.mean()),
+                'class_ious': ious,
+                'class_precisions': precisions,
+                'class_recalls': recalls
+            }
+        else: # Binary case - calculate for the positive class (class 1)
+            has_positive_pred = (pred_flat == 1).any()
+            has_positive_target = (target_flat == 1).any()
+            
+            if not has_positive_pred and not has_positive_target:
+                # No positive class in predictions or targets - perfect negative prediction
+                precision = 1.0
+                recall = 1.0
+                iou = 1.0
+            elif not has_positive_target:
+                # No positive in target but model predicted positive - all false positives
+                precision = 0.0
+                recall = 1.0  # Undefined, but set to 1 (no positives to recall)
+                iou = 0.0
+            elif not has_positive_pred:
+                # Target has positives but model predicted none - all false negatives
+                precision = 1.0  # Undefined, but set to 1 (no predictions to be wrong)
+                recall = 0.0
+                iou = 0.0
+            else:
+                # Normal case - both classes present
+                pred_mask = pred_flat == 1
+                target_mask = target_flat == 1
+                
+                tp = (pred_mask & target_mask).sum().float()
+                fp = (pred_mask & ~target_mask).sum().float()
+                fn = (~pred_mask & target_mask).sum().float()
+                
+                precision = (tp / (tp + fp + eps)).item()
+                recall = (tp / (tp + fn + eps)).item()
+                iou = (tp / (tp + fp + fn + eps)).item()
+            return {
+                'Pixel_Accuracy': pixel_accuracy,
+                'Precision': precision,
+                'Recall': recall,
+                'IOU': iou
+            }
+
     def _log_epoch_results(self, epoch, train_loss, val_metrics):
         """Enhanced logging of epoch results"""
         if isinstance(val_metrics, list):
