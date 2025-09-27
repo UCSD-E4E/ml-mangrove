@@ -1,5 +1,5 @@
 {
-  "model": "SegFormer",
+  "model": "SegFormer B2",
   "optimizer": "adamw",
   "scheduler": "cosine",
   "learning_rate": 0.0001,
