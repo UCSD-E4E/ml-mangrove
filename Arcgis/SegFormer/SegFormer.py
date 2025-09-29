@@ -5,6 +5,7 @@ import torch.nn.functional as F
 from transformers import SegformerForSemanticSegmentation
 import torch.nn as nn
 from torch.nn import Module
+# Based on https://developers.arcgis.com/python/latest/guide/add-model-using-model-extension/
 
 class SegFormer():
     def __init__(self, weights="nvidia/segformer-b0-finetuned-ade-512-512", state_dict=None):
