@@ -1,10 +1,10 @@
-
 import torch
 from fastai.learner import Learner
 import torch.nn.functional as F
 import torch.nn as nn
 from torchvision.models import ResNet18_Weights, resnet18
 from torch.nn import Conv2d, Module
+# Based on https://developers.arcgis.com/python/latest/guide/add-model-using-model-extension/
 
 class ResUNet():
     def __init__(self, weights=None, state_dict=None):
