@@ -1,24 +1,26 @@
 import torch
-from fastai.learner import Learner
 import torch.nn.functional as F
 import torch.nn as nn
-from torchvision.models import ResNet18_Weights, resnet18
+from torchvision.models import ResNet18_Weights, resnet18, resnet34, ResNet34_Weights, ResNet50_Weights, resnet50, resnet101, ResNet101_Weights, ResNet152_Weights, resnet152
 from torch.nn import Conv2d, Module
+from ModelClass import ModelClass
 # Based on https://developers.arcgis.com/python/latest/guide/add-model-using-model-extension/
 
-class ResUNet():
-    def __init__(self, weights=None, state_dict=None):
+class ResUNet(ModelClass):
+    def __init__(self, state_dict=None, weights=None):
         """
         Custom Model class to define the model architecture, loss function and input transformations.
         Args:
-            weights: Pretrained weights to be used for the model. Default is "nvidia/segformer-b0-finetuned-ade-512-512
-            state_dict: Path to the trained state dictionary to be loaded into the model. Default is None
+            state_dict: path to pretrained state_dict to be used for the model.
+            weights: Pretrained weights to be used for the model."
         """
+        self.state_dict = state_dict
+        self.name = "ResUNet"
+        self.description = "UNet model for pixel classification"
         self.model = None
         self.weights = weights
-        self.state_dict = state_dict
 
-    def on_batch_begin(self, learn: Learner, model_input_batch: torch.Tensor, model_target_batch: torch.Tensor):
+    def on_batch_begin(self, learn, model_input_batch: torch.Tensor, model_target_batch: torch.Tensor):
         """
         Function to transform the input data and the targets in accordance to the model for training.
         Args:
@@ -36,7 +38,20 @@ class ResUNet():
             xb: fastai transformed batch of input images: tensor of shape [N, C, H, W],
              where N - batch size C - number of channels (bands) in the image H - height of the image W - width of the image
         """
-        return xb[:, :3, :, :]
+        if len(xb.shape) == 3:
+            xb = xb.unsqueeze(0)
+        xb = xb[:, :3, :, :]
+
+        # Normalize using ImageNet stats
+        max_val = xb.max()
+        if max_val > 1.0:
+            if max_val <= 255.0:
+                xb = xb / 255.0
+            else:  # Unknown range - normalize by max value
+                xb = xb / max_val
+        mean = torch.tensor([0.485, 0.456, 0.406], device=xb.device, dtype=xb.dtype).view(1, 3, 1, 1)
+        std = torch.tensor([0.229, 0.224, 0.225], device=xb.device, dtype=xb.dtype).view(1, 3, 1, 1)
+        return (xb - mean) / std
 
     def transform_input_multispectral(self, xb: torch.Tensor) -> torch.Tensor:
         """
@@ -45,14 +60,29 @@ class ResUNet():
             xb: fastai transformed batch of input images: tensor of shape [N, C, H, W],
              where N - batch size C - number of channels (bands) in the image H - height of the image W - width of the image
         """
-        return xb[:, :3, :, :]
+        if len(xb.shape) == 3:
+            xb = xb.unsqueeze(0)
+        xb = xb[:, :3, :, :]
 
-    def get_model(self, data, backbone=None, **kwargs):
+        # Normalize using ImageNet stats
+        max_val = xb.max()
+        if max_val > 1.0:
+            if max_val <= 255.0:
+                xb = xb / 255.0
+            else:  # Unknown range - normalize by max value
+                xb = xb / max_val
+        mean = torch.tensor([0.485, 0.456, 0.406], device=xb.device, dtype=xb.dtype).view(1, 3, 1, 1)
+        std = torch.tensor([0.229, 0.224, 0.225], device=xb.device, dtype=xb.dtype).view(1, 3, 1, 1)
+        return (xb - mean) / std
+
+    def get_model(self, data, backbone="resnet18", **kwargs):
         """
         Function used to define the model architecture.
         Args:
             data: DataBunch object created in the prepare_data function
             backbone: Pretrained ResNet model to be used as the encoder. Default is ResNet18 with ImageNet weights.
+                \n The options are:
+                resnet18, resnet34, resnet50, resnet101, resnet152
             kwargs: Additional key word arguments to be passed to the model
         """
         if self.model is not None:
@@ -63,24 +93,35 @@ class ResUNet():
             UNet architecture with ResNet encoder.
             Defaults to ResNet18 with ImageNet weights.
             """
-            def __init__(self, ResNet = None, input_image_size=224, num_classes=1):
+            def __init__(self, backbone = None, input_image_size=224, num_classes=1):
                 super(ResNet_UNet, self).__init__()
-                if ResNet is None:
-                    ResNet = resnet18(weights=ResNet18_Weights.IMAGENET1K_V1)
-                for param in ResNet.parameters():
+                if backbone is None:
+                    backbone = resnet18(weights=ResNet18_Weights.IMAGENET1K_V1)
+                elif backbone == "resnet34":
+                    backbone = resnet34(weights=ResNet34_Weights.IMAGENET1K_V1)
+                elif backbone == "resnet50":
+                    backbone = resnet50(weights=ResNet50_Weights.IMAGENET1K_V1)
+                elif backbone == "resnet101":
+                    backbone = resnet101(weights=ResNet101_Weights.IMAGENET1K_V1)
+                elif backbone == "resnet152":
+                    backbone = resnet152(weights=ResNet152_Weights.IMAGENET1K_V1)
+                else:
+                    raise ValueError("Backbone not supported. Supported backbones are: resnet18, resnet34, resnet50, resnet101, resnet152")
+                
+                for param in backbone.parameters():
                     param.requires_grad = False
                 
                 # Encoder
                 self.layer1 = nn.Sequential(
-                    ResNet.conv1,
-                    ResNet.bn1,
+                    backbone.conv1,
+                    backbone.bn1,
                     nn.ReLU(),
-                    ResNet.maxpool,
-                    ResNet.layer1,
+                    backbone.maxpool,
+                    backbone.layer1,
                 )
-                self.layer2 = ResNet.layer2
-                self.layer3 = ResNet.layer3
-                self.layer4 = ResNet.layer4
+                self.layer2 = backbone.layer2
+                self.layer3 = backbone.layer3
+                self.layer4 = backbone.layer4
 
                 # Define feature dimensions
                 dummy_input = torch.randn(1, 3, input_image_size, input_image_size)
@@ -174,7 +215,7 @@ class ResUNet():
         
         num_classes = len(data.classes) if hasattr(data, 'classes') else 1
         input_image_size = data.train_ds[0][0].shape[1] if hasattr(data, 'train_ds') else 224
-        self.model = ResNet_UNet(ResNet=backbone, input_image_size=input_image_size, num_classes=num_classes)
+        self.model = ResNet_UNet(backbone=backbone, input_image_size=input_image_size, num_classes=num_classes)
         
         if self.state_dict is not None:
             kwargs["state_dict"] = self.state_dict

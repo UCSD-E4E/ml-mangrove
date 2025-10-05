@@ -7,20 +7,19 @@ from torch.nn import Module
 # Based on https://developers.arcgis.com/python/latest/guide/add-model-using-model-extension/
 
 class SegFormer():
-    def __init__(self, weights="nvidia/segformer-b0-finetuned-ade-512-512", state_dict=None):
+    def __init__(self, state_dict=None, weights=None):
         """
         Custom Model class to define the model architecture, loss function and input transformations.
         Args:
-            weights: Pretrained weights to be used for the model. Default is "nvidia/segformer-b0-finetuned-ade-512-512
-            state_dict: Path to the trained state dictionary to be loaded into the model. Default is None
+            state_dict: path to pretrained state_dict to be used for the model.
+            weights: Pretrained weights to be used for the model.
         """
-        self.name = "Segformer Semantic Segmentation"
+        self.state_dict = state_dict
+        self.name = "Segformer"
         self.description = "Segformer model for pixel classification"
         self.model = None
         self.weights = weights
-        self.state_dict = state_dict
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu")
-
+    
     def on_batch_begin(self, learn, model_input_batch: torch.Tensor, model_target_batch: torch.Tensor):
         """
         Function to transform the input data and the targets in accordance to the model for training.
@@ -39,7 +38,20 @@ class SegFormer():
             xb: fastai transformed batch of input images: tensor of shape [N, C, H, W],
              where N - batch size C - number of channels (bands) in the image H - height of the image W - width of the image
         """
-        return xb[:, :3, :, :]
+        if len(xb.shape) == 3:
+            xb = xb.unsqueeze(0)
+        xb = xb[:, :3, :, :]
+
+        # Normalize using ImageNet stats
+        max_val = xb.max()
+        if max_val > 1.0:
+            if max_val <= 255.0:
+                xb = xb / 255.0
+            else:  # Unknown range - normalize by max value
+                xb = xb / max_val
+        mean = torch.tensor([0.485, 0.456, 0.406], device=xb.device, dtype=xb.dtype).view(1, 3, 1, 1)
+        std = torch.tensor([0.229, 0.224, 0.225], device=xb.device, dtype=xb.dtype).view(1, 3, 1, 1)
+        return (xb - mean) / std
 
     def transform_input_multispectral(self, xb: torch.Tensor) -> torch.Tensor:
         """
@@ -48,15 +60,29 @@ class SegFormer():
             xb: fastai transformed batch of input images: tensor of shape [N, C, H, W],
              where N - batch size C - number of channels (bands) in the image H - height of the image W - width of the image
         """
-        return xb[:, :3, :, :]
+        if len(xb.shape) == 3:
+            xb = xb.unsqueeze(0)
+        xb = xb[:, :3, :, :]
 
-    def get_model(self, data, **kwargs):
+        # Normalize using ImageNet stats
+        max_val = xb.max()
+        if max_val > 1.0:
+            if max_val <= 255.0:
+                xb = xb / 255.0
+            else:  # Unknown range - normalize by max value
+                xb = xb / max_val
+        mean = torch.tensor([0.485, 0.456, 0.406], device=xb.device, dtype=xb.dtype).view(1, 3, 1, 1)
+        std = torch.tensor([0.229, 0.224, 0.225], device=xb.device, dtype=xb.dtype).view(1, 3, 1, 1)
+        return (xb - mean) / std
+
+    def get_model(self, data, backbone="nvidia/segformer-b2-finetuned-ade-512-512", **kwargs) -> Module:
         """
         Function used to define the model architecture.
         Args:
             data: DataBunch object created in the prepare_data function
             kwargs: Additional key word arguments to be passed to the model
         """
+        self.weights = backbone
         if self.model is not None:
             return self.model
     
@@ -66,15 +92,16 @@ class SegFormer():
             Uses a pretrained SegFormer backbone and replaces the decode head to upsample to the input image size.
             
             https://github.com/NVlabs/SegFormer
-            
             """
-            def __init__(self, num_classes=1, input_image_size=128, weights="nvidia/segformer-b2-finetuned-ade-512-512"):
+            def __init__(self, num_classes=1, input_image_size=128, backbone=None):
                 super(SegFormerModel, self).__init__()
                 self.num_classes = num_classes
                 self.input_image_size = input_image_size
 
+                if backbone is None:
+                    backbone = "nvidia/segformer-b2-finetuned-ade-512-512"
                 self.segformer = SegformerForSemanticSegmentation.from_pretrained(
-                    weights,
+                    backbone,
                     num_labels=num_classes,
                     ignore_mismatched_sizes=True
                 )
@@ -121,7 +148,7 @@ class SegFormer():
         num_classes = len(data.classes) if hasattr(data, 'classes') else 1
         train_backbone = kwargs.get("train_backbone", False)
 
-        segformer = SegFormerModel(num_classes=num_classes, input_image_size=data.train_ds[0][0].shape[1], weights=weights)
+        segformer = SegFormerModel(num_classes=num_classes, input_image_size=data.train_ds[0][0].shape[1], backbone=weights)
         if train_backbone:
             segformer.train_backbone()
 
@@ -137,6 +164,8 @@ class SegFormer():
                 elif 'model_state_dict' in obj:
                     state_dict = obj['model_state_dict']
                 segformer.load_state_dict(state_dict)
+        else:
+            print("No state_dict found. Initializing model with random weights.")
         
         self.model = segformer
         return self.model
@@ -152,7 +181,7 @@ class SegFormer():
         targets = model_target[0].long()  # ground truth
         return F.cross_entropy(logits, targets, ignore_index=255)
 
-    def post_process(self, pred: torch.Tensor, thres: float) -> torch.Tensor:
+    def post_process(self, pred: torch.Tensor, thres: float = 0.5) -> torch.Tensor:
         """
         Function to post process the output of the model in validation/infrencing mode.
         Args:
