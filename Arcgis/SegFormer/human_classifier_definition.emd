@@ -1,0 +1,17 @@
+{
+  "Framework": "PyTorch",
+  "ModelConfiguration": "SegFormer",
+  "ModelFile": "seggy.pth",
+  "Classes": [
+    {"Value": 0, "Name": "Human Artifact"},
+    {"Value": 1, "Name": "Vegetation"},
+    {"Value": 2, "Name": "Building"},
+    {"Value": 3, "Name": "Car"},
+    {"Value": 4, "Name": "Low Vegetation"},
+    {"Value": 5, "Name": "Road"},
+  ],
+  "ImageHeight": 224,
+  "ImageWidth": 224,
+  "ExtractBands": [1, 2, 3],
+  "InferenceFunction": "SegFormer.Segformer"
+}
