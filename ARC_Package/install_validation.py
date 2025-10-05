@@ -2,7 +2,6 @@
 SegFormer Toolbox Installation & Validation Script
 Run this from ArcGIS Pro's Python Command Prompt to verify installation
 """
-
 import sys
 import os
 from pathlib import Path
@@ -39,7 +38,7 @@ def main():
     # Step 2: Check ArcPy
     print_step(2, total_steps, "Checking ArcPy...")
     try:
-        import arcpy
+        import arcpy # type: ignore
         arcpy_version = arcpy.GetInstallInfo()['Version']
         results['arcpy'] = True
         print(f"  ✓ ArcGIS Pro {arcpy_version}")
@@ -85,7 +84,7 @@ def main():
     # Step 5: Check GDAL
     print_step(5, total_steps, "Checking GDAL...")
     try:
-        from osgeo import gdal
+        from osgeo import gdal # type: ignore
         gdal_version = gdal.__version__
         results['gdal'] = True
         print(f"  ✓ GDAL {gdal_version}")
@@ -123,7 +122,7 @@ def main():
             # Try to import
             sys.path.insert(0, path)
             try:
-                from SegFormer import SegFormer
+                from ARC_Package.models.SegFormer import SegFormer
                 print(f"  ✓ Successfully imported SegFormer class")
                 results['segformer'] = True
                 break
@@ -158,7 +157,7 @@ def main():
                     self.classes = ['Background', 'Class1']
                     self.train_ds = DummyDataset()
             
-            from SegFormer import SegFormer
+            from ARC_Package.models.SegFormer import SegFormer
             dummy_data = DummyData()
             model_wrapper = SegFormer()
             model = model_wrapper.get_model(dummy_data)
