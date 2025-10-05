@@ -1,28 +1,81 @@
-import arcpy
-import sys
+import arcpy # type: ignore
 import os
+from models import *
+from models import ModelClass
+import torch
+import numpy as np
+import gc
+
+# Define supported models and their configurations
+MODEL_CONFIGS = {
+    "SegFormer": {
+        "module": "models",
+        "class_name": "SegFormer",
+        "default_backbone": "nvidia/segformer-b2-finetuned-ade-512-512",
+        "backbone_options": [
+            "nvidia/segformer-b0-finetuned-ade-512-512",
+            "nvidia/segformer-b1-finetuned-ade-512-512",
+            "nvidia/segformer-b2-finetuned-ade-512-512",
+            "nvidia/segformer-b3-finetuned-ade-512-512",
+            "nvidia/segformer-b4-finetuned-ade-512-512",
+            "nvidia/segformer-b5-finetuned-ade-640-640"
+        ],
+        "recommended_tile_size": 512,
+        "recommended_batch_size": 16,
+        "supports_multispectral": False
+    },
+    "ResUNet": {
+        "module": "models",
+        "class_name": "ResUNet",
+        "default_backbone": "resnet18",
+        "backbone_options": [
+            "resnet18",
+            "resnet34",
+            "resnet50",
+            "resnet101",
+            "resnet152"
+        ],
+        "recommended_tile_size": 224,
+        "recommended_batch_size": 16,
+        "supports_multispectral": False
+    }
+}
 
 class Toolbox(object):
     def __init__(self):
-        self.label = "SegFormer Semantic Segmentation"
-        self.alias = "segformer"
+        self.label = "Semantic Segmentation"
+        self.alias = "semantic segmentation toolbox"
         self.tools = [
-            SegFormerClassify,
-            SegFormerBatchProcess,
-            SegFormerModelInfo,
-            SegFormerValidateModel
+            Classify,
+            ModelInfo,
+            ValidateModel
         ]
+        self.canRunInBackground = False
 
-class SegFormerClassify(object):
-    """Main classification tool for single raster processing"""
+class Classify(object):
+    """Main classification tool for raster processing"""
     
     def __init__(self):
-        self.label = "Classify Raster with SegFormer"
-        self.description = "Perform semantic segmentation on a raster using a trained SegFormer model"
-        self.canRunInBackground = False  # Run in foreground to avoid new ArcGIS instance
+        self.label = "Classify Raster"
+        self.description = "Perform semantic segmentation on a raster using a trained model"
+        self.canRunInBackground = False
+        # Define supported models and their configurations
+        self.model_configs = MODEL_CONFIGS
 
     def getParameterInfo(self):
+        """Define the tool parameters."""
         params = []
+        
+        # Model Architecture Selection
+        params.append(arcpy.Parameter(
+            displayName="Model Architecture",
+            name="model_architecture",
+            datatype="GPString",
+            parameterType="Required",
+            direction="Input"))
+        params[0].filter.type = "ValueList"
+        params[0].filter.list = list(self.model_configs.keys())
+        params[0].value = "SegFormer"
         
         # Input Raster
         params.append(arcpy.Parameter(
@@ -39,24 +92,25 @@ class SegFormerClassify(object):
             datatype="DEFile",
             parameterType="Required",
             direction="Input"))
-        params[1].filter.list = ['pth', 'pt']
+        params[2].filter.list = ['pth', 'pt']
         
         # Output Raster
         params.append(arcpy.Parameter(
-            displayName="Output Classified Raster",
+            displayName="Output Classified Raster (.tif recommended)",
             name="output_raster",
             datatype="DERasterDataset",
             parameterType="Required",
             direction="Output"))
         
-        # Processing Options Group
+        # Processing Options Category
         params.append(arcpy.Parameter(
             displayName="Tile Size (pixels)",
             name="tile_size",
             datatype="GPLong",
             parameterType="Optional",
             direction="Input"))
-        params[3].value = 512
+        params[4].value = 512
+        params[4].category = "Processing Options"
         
         params.append(arcpy.Parameter(
             displayName="Tile Overlap (pixels)",
@@ -64,7 +118,8 @@ class SegFormerClassify(object):
             datatype="GPLong",
             parameterType="Optional",
             direction="Input"))
-        params[4].value = 64
+        params[5].value = 64
+        params[5].category = "Processing Options"
         
         params.append(arcpy.Parameter(
             displayName="Batch Size",
@@ -72,36 +127,42 @@ class SegFormerClassify(object):
             datatype="GPLong",
             parameterType="Optional",
             direction="Input"))
-        params[5].value = 4
-        params[5].filter.type = "Range"
-        params[5].filter.list = [1, 32]
+        params[6].value = 8
+        params[6].filter.type = "Range"
+        params[6].filter.list = [1, 64]
+        params[6].category = "Processing Options"
         
         # Use GPU
         params.append(arcpy.Parameter(
-            displayName="Use GPU (if available) - May cause crashes!",
+            displayName="Use GPU (may cause crashes)",
             name="use_gpu",
             datatype="GPBoolean",
             parameterType="Optional",
             direction="Input"))
-        params[6].value = False  # Default to CPU for stability
+        params[7].value = False  # Changed to False for stability
+        params[7].category = "Processing Options"
+
+        # Model Configuration Category
+        params.append(arcpy.Parameter(
+            displayName="Pretrained Backbone",
+            name="pretrained_backbone",
+            datatype="GPString",
+            parameterType="Optional",
+            direction="Input"))
+        params[8].filter.type = "ValueList"
+        params[8].value = None  # Default will be set dynamically
+        params[8].filter.list = []  # Will be populated dynamically
+        params[8].category = "Model Configuration"
         
-        # Class Configuration
+        # Output Configuration Category
         params.append(arcpy.Parameter(
             displayName="Class Names (comma-separated)",
             name="class_names",
             datatype="GPString",
             parameterType="Optional",
             direction="Input"))
-        params[7].value = "Background,Class1"
-        
-        # Model Weights
-        params.append(arcpy.Parameter(
-            displayName="Pretrained Weights",
-            name="pretrained_weights",
-            datatype="GPString",
-            parameterType="Optional",
-            direction="Input"))
-        params[8].value = "nvidia/segformer-b0-finetuned-ade-512-512"
+        params[9].value = "Human Artifact,Vegetation,Building,Car,Low Vegetation,Road"
+        params[9].category = "Output Configuration"
         
         # NoData Value
         params.append(arcpy.Parameter(
@@ -110,61 +171,87 @@ class SegFormerClassify(object):
             datatype="GPLong",
             parameterType="Optional",
             direction="Input"))
-        params[9].value = 255
+        params[10].value = 255
+        params[10].category = "Output Configuration"
         
         return params
 
     def isLicensed(self):
+        """Set whether the tool is licensed to execute."""
         return True
 
     def updateParameters(self, parameters):
+        """Update parameters dynamically based on model selection"""
+        
+        # When model architecture changes, update related parameters
+        if parameters[0].altered:
+            model_name = parameters[0].valueAsText
+            
+            if model_name in self.model_configs:
+                config = self.model_configs[model_name]
+                
+                # Update pretrained backbone dropdown options
+                parameters[8].filter.list = config["backbone_options"]
+
+                # Set default backbone if current value not in new list
+                if parameters[8].value not in config["backbone_options"]:
+                    parameters[8].value = config["default_backbone"]
+
+                # Update recommended datasizes
+                if not parameters[4].altered:
+                    parameters[4].value = config["recommended_tile_size"]
+                if not parameters[6].altered:
+                    parameters[6].value = config["recommended_batch_size"]
         return
 
     def updateMessages(self, parameters):
-        if parameters[3].value and parameters[3].value < 128:
-            parameters[3].setWarningMessage("Tile size < 128 may produce poor results")
-        
-        if parameters[4].value and parameters[3].value:
-            if parameters[4].value >= parameters[3].value / 2:
-                parameters[4].setErrorMessage("Overlap must be less than half the tile size")
-        
+        """Validate parameters and provide helpful messages"""
+        if parameters[4].value and parameters[4].value < 128:
+            parameters[4].setWarningMessage("Tile size < 128 may produce poor results")
+        if parameters[5].value and parameters[4].value:
+            if parameters[5].value >= parameters[4].value / 2:
+                parameters[5].setErrorMessage("Overlap must be less than half the tile size")
         return
 
     def execute(self, parameters, messages):
         model = None
+        """The source code of the tool."""
         try:
-            # Import here to avoid issues during toolbox load
             import torch
             import gc
-            
-            arcpy.AddMessage("Importing SegFormer module...")
-            try:
-                from SegFormer import SegFormer
-            except ImportError as e:
-                arcpy.AddError(f"Cannot import SegFormer module: {e}")
-                return
-            
             # Get parameters
-            input_raster = parameters[0].valueAsText
-            model_file = parameters[1].valueAsText
-            output_raster = parameters[2].valueAsText
-            tile_size = parameters[3].value or 512
-            tile_overlap = parameters[4].value or 64
-            batch_size = parameters[5].value or 4
-            use_gpu = parameters[6].value
-            class_names = [c.strip() for c in parameters[7].valueAsText.split(',')]
-            pretrained_weights = parameters[8].valueAsText
-            nodata_value = parameters[9].value or 255
+            model_architecture = parameters[0].valueAsText
+            input_raster = parameters[1].valueAsText
+            model_file = parameters[2].valueAsText
+            output_raster = parameters[3].valueAsText
+            tile_size = parameters[4].value or 512
+            tile_overlap = parameters[5].value or 64
+            batch_size = parameters[6].value or 4
+            use_gpu = parameters[7].value
+            backbone = parameters[8].valueAsText
+            class_names = [c.strip() for c in parameters[9].valueAsText.split(',')]
+            nodata_value = parameters[10].value or 255
             
             arcpy.AddMessage("=" * 80)
-            arcpy.AddMessage("SegFormer Semantic Segmentation Tool")
+            arcpy.AddMessage("Semantic Segmentation Tool")
             arcpy.AddMessage("=" * 80)
+            arcpy.AddMessage(f"Model Architecture: {model_architecture}")
+            
+            # Validate model architecture
+            if model_architecture not in self.model_configs:
+                arcpy.AddError(f"Unsupported model architecture: {model_architecture}")
+                return
+            try:
+                import models
+            except ImportError as e:
+                arcpy.AddError(f"Cannot import module: {e}")
+                arcpy.AddError("Ensure your models.py file is in the Python path")
+                return
             
             # Validate inputs
             if not os.path.exists(input_raster):
                 arcpy.AddError(f"Input raster not found: {input_raster}")
                 return
-            
             if not os.path.exists(model_file):
                 arcpy.AddError(f"Model file not found: {model_file}")
                 return
@@ -174,10 +261,12 @@ class SegFormerClassify(object):
             device = self._setup_device(use_gpu, messages)
             
             # Load model
-            arcpy.AddMessage("\n[2/5] Loading SegFormer model...")
+            arcpy.AddMessage("\n[2/5] Loading model...")
+            arcpy.AddMessage(f"Architecture: {model_architecture}")
             arcpy.AddMessage(f"Model file: {model_file}")
-            model = self._load_model(model_file, class_names, pretrained_weights, device, messages)
-            
+            model_class = self._load_model_class(model_architecture, messages)
+            model = self._build_model(model_class, class_names, tile_size, backbone, model_file, device, messages)
+
             # Clear memory
             gc.collect()
             if torch.cuda.is_available():
@@ -193,7 +282,7 @@ class SegFormerClassify(object):
             arcpy.AddMessage(f"Batch size: {batch_size}")
             
             self._process_raster(
-                input_raster, output_raster, model, device,
+                input_raster, output_raster, model_class, model, device,
                 tile_size, tile_overlap, batch_size, nodata_value, messages
             )
             
@@ -235,8 +324,6 @@ class SegFormerClassify(object):
         """Setup compute device (CPU or GPU)"""
         import torch
         
-        # Force CPU mode for ArcGIS Pro stability
-        # GPU can cause crashes in ArcGIS Pro's Python environment
         if use_gpu and torch.cuda.is_available():
             try:
                 # Test if GPU actually works
@@ -248,7 +335,6 @@ class SegFormerClassify(object):
                 arcpy.AddMessage(f"✓ GPU available: {torch.cuda.get_device_name(0)}")
                 arcpy.AddMessage(f"  VRAM: {torch.cuda.get_device_properties(0).total_memory / 1e9:.2f} GB")
                 arcpy.AddWarning("  Note: GPU mode may be unstable in ArcGIS Pro")
-                arcpy.AddWarning("  If you experience crashes, disable 'Use GPU' option")
                 
                 # Set conservative GPU settings
                 torch.backends.cudnn.benchmark = False
@@ -263,79 +349,84 @@ class SegFormerClassify(object):
             if use_gpu and not torch.cuda.is_available():
                 arcpy.AddWarning("GPU requested but not available, using CPU")
             else:
-                arcpy.AddMessage("✓ Using CPU mode (recommended for stability)")
+                arcpy.AddMessage("✓ Using CPU for processing (recommended)")
         
         return device
 
-    def _load_model(self, model_file, class_names, pretrained_weights, device, messages):
-        """Load the SegFormer model"""
-        import torch
-        import numpy as np
-        import gc
-        
+    def _load_model_class(self, model_architecture, messages) -> ModelClass:
+        """Load the model based on architecture"""
+        import models
         try:
-            arcpy.AddMessage("  Loading SegFormer module...")
-            from SegFormer import SegFormer
+            # Get model class dynamically
+            config = self.model_configs[model_architecture]
+            model_class_name = config["class_name"]
             
-            # Create dummy data object that matches what SegFormer.get_model expects
-            class DummyDataset:
-                def __init__(self, img_size):
-                    # Create a simple numpy array to avoid early tensor creation
-                    self.dummy_img = np.zeros((3, img_size, img_size), dtype=np.float32)
-                    
-                def __getitem__(self, idx):
-                    return (torch.from_numpy(self.dummy_img), None)
-            
-            class DummyData:
-                def __init__(self, classes, img_size=512):
-                    self.classes = classes
-                    self.train_ds = DummyDataset(img_size)
-            
-            arcpy.AddMessage("  Creating model architecture...")
-            dummy_data = DummyData(class_names, img_size=512)
-            
-            # Don't pass state_dict in constructor to avoid loading twice
-            model_wrapper = SegFormer(weights=pretrained_weights, state_dict=None)
-            
-            # Get model architecture first
-            arcpy.AddMessage("  Building model structure...")
-            model = model_wrapper.get_model(dummy_data, state_dict=model_file)
-            
-            # Clear dummy data
-            del dummy_data
-            gc.collect()
-            
-            arcpy.AddMessage("  Moving model to device...")
-            model = model.to(device)
-            model.eval()
-            
-            # Disable gradient computation to save memory
-            for param in model.parameters():
-                param.requires_grad = False
-            
-            arcpy.AddMessage(f"✓ Model loaded successfully")
-            arcpy.AddMessage(f"  Classes: {', '.join(class_names)}")
-            arcpy.AddMessage(f"  Device: {device}")
-            
+            # Get the model class from models module
             try:
-                total_params = sum(p.numel() for p in model.parameters())
-                arcpy.AddMessage(f"  Parameters: {total_params:,}")
-            except:
-                pass
+                modelclass = getattr(models, model_class_name)
+            except AttributeError:
+                raise ImportError(f"Model class '{model_class_name}' not found in models module")
             
-            return model
-            
+            # Initialize model wrapper
+            model_wrapper = modelclass()
+            return model_wrapper
+
         except Exception as e:
-            arcpy.AddError(f"Failed to load model: {str(e)}")
+            arcpy.AddError(f"Failed to load model class: {str(e)}")
             import traceback
             arcpy.AddError(traceback.format_exc())
             raise
 
-    def _process_raster(self, input_path, output_path, model, device, 
-                       tile_size, overlap, batch_size, nodata_value, messages):
+    def _build_model(self, model_class: ModelClass, class_names, img_size, backbone, weights, device, messages) -> torch.nn.Module:
+        arcpy.AddMessage("  Building model ...")
+        
+        # Create dummy data object
+        class DummyDataset:
+            def __init__(self, img_size):
+                self.dummy_img = np.zeros((3, img_size, img_size), dtype=np.float32)  
+            def __getitem__(self, idx):
+                return (torch.from_numpy(self.dummy_img), None)
+        class DummyData:
+            def __init__(self, classes, img_size=512):
+                self.classes = classes
+                self.train_ds = DummyDataset(img_size)
+        
+        try:
+            # Get model architecture
+            dummy_data = DummyData(class_names, img_size=img_size)
+            model = model_class.get_model(dummy_data, backbone=backbone, state_dict=weights)
+        except Exception as e:
+            arcpy.AddError(f"Failed to build model: {str(e)}")
+            import traceback
+            arcpy.AddError(traceback.format_exc())
+            raise
+        
+        del dummy_data
+        gc.collect()
+        
+        arcpy.AddMessage("  Moving model to device...")
+        model = model.to(device)
+        model.eval()
+        for param in model.parameters():
+            param.requires_grad = False
+        
+        arcpy.AddMessage(f"✓ Model loaded successfully")
+        arcpy.AddMessage(f"  Classes: {', '.join(class_names)}")
+        arcpy.AddMessage(f"  Device: {device}")
+        
+        try:
+            total_params = sum(p.numel() for p in model.parameters())
+            arcpy.AddMessage(f"  Parameters: {total_params:,}")
+        except:
+            pass
+
+        return model
+
+    def _process_raster(self, input_path, output_path, model_class: ModelClass, model: torch.nn.Module, device: torch.device,
+                       tile_size: int, overlap: int, batch_size: int, nodata_value, messages):
         """Process raster with tiling"""
         import torch
-        from osgeo import gdal, gdalconst
+        from osgeo import gdal, gdalconst # type: ignore
         import numpy as np
         import gc
         import tempfile
@@ -344,10 +435,10 @@ class SegFormerClassify(object):
         # Check if output is geodatabase
         is_gdb = '.gdb' in output_path.lower() or '.sde' in output_path.lower()
         
-        # If geodatabase, create temporary GeoTIFF first, then copy to GDB
+        # If geodatabase, create temporary GeoTIFF first
         if is_gdb:
             temp_dir = tempfile.gettempdir()
-            temp_output = os.path.join(temp_dir, "segformer_temp_output.tif")
+            temp_output = os.path.join(temp_dir, "temp_output.tif")
             arcpy.AddMessage(f"  Creating temporary file: {temp_output}")
             actual_output = temp_output
         else:
@@ -365,7 +456,7 @@ class SegFormerClassify(object):
         arcpy.AddMessage(f"  Size: {width} x {height} pixels")
         arcpy.AddMessage(f"  Bands: {n_bands}")
         
-        # Create output (temporary GeoTIFF or final output)
+        # Create output
         driver = gdal.GetDriverByName('GTiff')
         dst_ds = driver.Create(
             actual_output, width, height, 1, gdal.GDT_Byte,
@@ -387,7 +478,7 @@ class SegFormerClassify(object):
         
         processed = 0
         
-        # Process tiles one at a time to minimize memory usage
+        # Process tiles
         for tile_idx in range(total_tiles):
             try:
                 ty = tile_idx // n_tiles_x
@@ -406,35 +497,35 @@ class SegFormerClassify(object):
                     if data is not None:
                         tile_data[b, :y_size, :x_size] = data
                 
-                # Process single tile
-                tile_tensor = torch.from_numpy(tile_data).unsqueeze(0).float() / 255.0
-                tile_tensor = tile_tensor.to(device)
-                
+                # Process tile
+                tile_tensor = torch.from_numpy(tile_data).float()
+                tile_tensor = model_class.transform_input(tile_tensor).to(device)
+
                 with torch.no_grad():
-                    output = model(tile_tensor)
-                    prediction = torch.argmax(output, dim=1).cpu().numpy()[0]
-                
+                    output = model.forward(tile_tensor)
+                    prediction = model_class.post_process(output)
+
                 # Extract valid region
                 pred = prediction[:y_size, :x_size]
                 
                 # Write result
                 dst_band.WriteArray(pred, x_off, y_off)
+                processed += 1
                 
                 # Cleanup
                 del tile_tensor, output, prediction, pred
-                processed += 1
-                
+                if processed % 50 == 0:
+                        gc.collect()
+                        if torch.cuda.is_available():
+                            torch.cuda.empty_cache()
+
+                # Update progress
                 if processed % 10 == 0:
                     arcpy.SetProgressorPosition(processed)
                     arcpy.AddMessage(f"  Progress: {processed}/{total_tiles} tiles ({100*processed/total_tiles:.1f}%)")
-                    # Force memory cleanup every 10 tiles
-                    gc.collect()
-                    if torch.cuda.is_available():
-                        torch.cuda.empty_cache()
-                
+          
             except Exception as e:
                 arcpy.AddWarning(f"  Failed to process tile {tile_idx}: {e}")
-                # Write nodata for failed tile
                 failed_tile = np.full((y_size, x_size), nodata_value, dtype=np.uint8)
                 dst_band.WriteArray(failed_tile, x_off, y_off)
                 processed += 1
@@ -449,11 +540,10 @@ class SegFormerClassify(object):
         
         arcpy.AddMessage(f"✓ Processed {total_tiles} tiles")
         
-        # If geodatabase output, copy temp file to GDB
+        # If geodatabase output, copy temp file
         if is_gdb:
             arcpy.AddMessage(f"  Copying to geodatabase...")
             try:
-                # Use arcpy to copy to geodatabase
                 arcpy.management.CopyRaster(
                     temp_output,
                     output_path,
@@ -477,30 +567,19 @@ class SegFormerClassify(object):
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
-
-
-    def _blend_overlap(self, tile, overlap):
-        """Simple center-weighted blending for overlapping tiles"""
-        # For simplicity, just return center region
-        # Full implementation would blend with neighboring tiles
-        return tile
-
     def _finalize_output(self, output_path, class_names, messages):
         """Build pyramids and statistics"""
         try:
-            # Check if output is in a geodatabase
             is_gdb = '.gdb' in output_path.lower() or '.sde' in output_path.lower()
             
             if is_gdb:
                 arcpy.AddMessage("✓ Output saved to geodatabase")
-                # Geodatabases handle pyramids automatically
                 try:
                     arcpy.management.CalculateStatistics(output_path)
                     arcpy.AddMessage("✓ Calculated statistics")
                 except:
                     arcpy.AddMessage("  (Statistics will be calculated on first display)")
             else:
-                # For file-based rasters (GeoTIFF, etc.)
                 try:
                     arcpy.management.BuildPyramids(output_path)
                     arcpy.AddMessage("✓ Built pyramids")
@@ -513,7 +592,6 @@ class SegFormerClassify(object):
                 except Exception as e:
                     arcpy.AddMessage(f"  Could not calculate statistics: {e}")
             
-            # Try to build attribute table with class names
             try:
                 arcpy.management.BuildRasterAttributeTable(output_path, "Overwrite")
                 arcpy.AddMessage("✓ Built raster attribute table")
@@ -524,161 +602,14 @@ class SegFormerClassify(object):
             arcpy.AddWarning(f"Post-processing warning: {e}")
             arcpy.AddMessage("  Classification completed successfully despite post-processing issues")
 
-
-class SegFormerBatchProcess(object):
-    """Batch processing tool for multiple rasters"""
-    
-    def __init__(self):
-        self.label = "Batch Classify Rasters"
-        self.description = "Process multiple rasters with SegFormer"
-        self.canRunInBackground = False  # Run in foreground to see progress
-
-    def getParameterInfo(self):
-        params = []
-        
-        # Input Folder
-        params.append(arcpy.Parameter(
-            displayName="Input Raster Folder",
-            name="input_folder",
-            datatype="DEFolder",
-            parameterType="Required",
-            direction="Input"))
-        
-        # File Pattern
-        params.append(arcpy.Parameter(
-            displayName="File Pattern (e.g., *.tif)",
-            name="file_pattern",
-            datatype="GPString",
-            parameterType="Optional",
-            direction="Input"))
-        params[1].value = "*.tif"
-        
-        # Model File
-        params.append(arcpy.Parameter(
-            displayName="Trained Model File (.pth)",
-            name="model_file",
-            datatype="DEFile",
-            parameterType="Required",
-            direction="Input"))
-        params[2].filter.list = ['pth', 'pt']
-        
-        # Output Folder
-        params.append(arcpy.Parameter(
-            displayName="Output Folder",
-            name="output_folder",
-            datatype="DEFolder",
-            parameterType="Required",
-            direction="Input"))
-        
-        # Output Suffix
-        params.append(arcpy.Parameter(
-            displayName="Output Suffix",
-            name="output_suffix",
-            datatype="GPString",
-            parameterType="Optional",
-            direction="Input"))
-        params[4].value = "_classified"
-        
-        # Tile Size
-        params.append(arcpy.Parameter(
-            displayName="Tile Size",
-            name="tile_size",
-            datatype="GPLong",
-            parameterType="Optional",
-            direction="Input"))
-        params[5].value = 512
-        
-        # Class Names
-        params.append(arcpy.Parameter(
-            displayName="Class Names (comma-separated)",
-            name="class_names",
-            datatype="GPString",
-            parameterType="Optional",
-            direction="Input"))
-        params[6].value = "Background,Class1"
-        
-        return params
-
-    def execute(self, parameters, messages):
-        try:
-            import glob
-            
-            input_folder = parameters[0].valueAsText
-            file_pattern = parameters[1].valueAsText
-            model_file = parameters[2].valueAsText
-            output_folder = parameters[3].valueAsText
-            output_suffix = parameters[4].valueAsText or "_classified"
-            tile_size = parameters[5].value or 512
-            class_names = parameters[6].valueAsText
-            
-            # Find input files
-            search_path = os.path.join(input_folder, file_pattern)
-            input_files = glob.glob(search_path)
-            
-            if not input_files:
-                arcpy.AddError(f"No files found matching: {search_path}")
-                return
-            
-            arcpy.AddMessage(f"Found {len(input_files)} raster(s) to process")
-            arcpy.SetProgressor("step", "Processing rasters...", 0, len(input_files), 1)
-            
-            # Process each file using SegFormerClassify
-            classify_tool = SegFormerClassify()
-            
-            for i, input_file in enumerate(input_files, 1):
-                arcpy.AddMessage(f"\n{'='*80}")
-                arcpy.AddMessage(f"Processing {i}/{len(input_files)}: {os.path.basename(input_file)}")
-                arcpy.AddMessage(f"{'='*80}")
-                
-                # Generate output path
-                base_name = os.path.splitext(os.path.basename(input_file))[0]
-                output_file = os.path.join(output_folder, f"{base_name}{output_suffix}.tif")
-                
-                # Create parameter objects for classify tool
-                class Param:
-                    def __init__(self, value):
-                        self.value = value
-                        self.valueAsText = str(value) if value is not None else None
-                
-                params = [
-                    Param(input_file),
-                    Param(model_file),
-                    Param(output_file),
-                    Param(tile_size),
-                    Param(64),  # overlap
-                    Param(4),   # batch_size
-                    Param(True),  # use_gpu
-                    Param(class_names),
-                    Param("nvidia/segformer-b0-finetuned-ade-512-512"),
-                    Param(255)  # nodata
-                ]
-                
-                try:
-                    classify_tool.execute(params, messages)
-                    arcpy.AddMessage(f"✓ Completed: {output_file}")
-                except Exception as e:
-                    arcpy.AddWarning(f"✗ Failed: {input_file} - {str(e)}")
-                
-                arcpy.SetProgressorPosition(i)
-            
-            arcpy.ResetProgressor()
-            arcpy.AddMessage(f"\n{'='*80}")
-            arcpy.AddMessage(f"✓ Batch processing complete! Processed {len(input_files)} raster(s)")
-            arcpy.AddMessage(f"{'='*80}")
-            
-        except Exception as e:
-            arcpy.AddError(f"Batch processing error: {str(e)}")
-            import traceback
-            arcpy.AddError(traceback.format_exc())
-
-
-class SegFormerModelInfo(object):
+class ModelInfo(object):
     """Tool to inspect model information"""
     
     def __init__(self):
         self.label = "Inspect Model Information"
-        self.description = "Display information about a trained SegFormer model"
+        self.description = "Display information about a trained model"
         self.canRunInBackground = False
+        self.model_configs = MODEL_CONFIGS
 
     def getParameterInfo(self):
         params = []
@@ -700,12 +631,11 @@ class SegFormerModelInfo(object):
             model_file = parameters[0].valueAsText
             
             arcpy.AddMessage("=" * 80)
-            arcpy.AddMessage("SegFormer Model Information")
+            arcpy.AddMessage("Model Information")
             arcpy.AddMessage("=" * 80)
             arcpy.AddMessage(f"\nModel File: {model_file}")
             arcpy.AddMessage(f"File Size: {os.path.getsize(model_file) / 1e6:.2f} MB")
             
-            # Load checkpoint
             checkpoint = torch.load(model_file, map_location='cpu')
             
             arcpy.AddMessage("\nCheckpoint Contents:")
@@ -714,7 +644,6 @@ class SegFormerModelInfo(object):
                     if key != 'state_dict':
                         arcpy.AddMessage(f"  - {key}")
                 
-                # Get state dict
                 if 'state_dict' in checkpoint:
                     state_dict = checkpoint['state_dict']
                 elif 'model_state_dict' in checkpoint:
@@ -722,18 +651,15 @@ class SegFormerModelInfo(object):
                 else:
                     state_dict = checkpoint
                 
-                # Count parameters
                 total_params = sum(p.numel() for p in state_dict.values())
                 arcpy.AddMessage(f"\nTotal Parameters: {total_params:,}")
                 
-                # Detect number of classes
                 for key in state_dict.keys():
                     if 'classifier' in key and 'weight' in key:
                         num_classes = state_dict[key].shape[0]
                         arcpy.AddMessage(f"Number of Classes: {num_classes}")
                         break
                 
-                # Show layer info
                 arcpy.AddMessage("\nModel Layers:")
                 layer_count = {}
                 for key in state_dict.keys():
@@ -750,14 +676,14 @@ class SegFormerModelInfo(object):
             import traceback
             arcpy.AddError(traceback.format_exc())
 
-
-class SegFormerValidateModel(object):
+class ValidateModel(object):
     """Tool to validate model can be loaded"""
-    
     def __init__(self):
         self.label = "Validate Model"
         self.description = "Test if a model can be loaded successfully"
         self.canRunInBackground = False
+        # Define supported models and their configurations
+        self.model_configs = MODEL_CONFIGS
 
     def getParameterInfo(self):
         params = []
@@ -776,65 +702,104 @@ class SegFormerValidateModel(object):
             datatype="GPLong",
             parameterType="Required",
             direction="Input"))
-        params[1].value = 2
-        
+        params[1].value = 6
+
         params.append(arcpy.Parameter(
-            displayName="Pretrained Weights",
-            name="pretrained_weights",
+            displayName="Model Architecture",
+            name="model_architecture",
+            datatype="GPString",
+            parameterType="Required",
+            direction="Input"))
+        params[2].filter.type = "ValueList"
+        params[2].filter.list = list(self.model_configs.keys())
+        params[2].value = "SegFormer"
+        
+        # Model Configuration Category
+        params.append(arcpy.Parameter(
+            displayName="Pretrained Backbone",
+            name="pretrained_backbone",
             datatype="GPString",
             parameterType="Optional",
             direction="Input"))
-        params[2].value = "nvidia/segformer-b0-finetuned-ade-512-512"
+        params[3].filter.type = "ValueList"
+        params[3].value = self.model_configs["SegFormer"]["default_backbone"]
+        params[3].filter.list = list(self.model_configs["SegFormer"]["backbone_options"])
+        params[3].category = "Model Configuration"
         
+        params.append(arcpy.Parameter(
+            displayName="Image Size (pixels)",
+            name="image_size",
+            datatype="GPLong",
+            parameterType="Optional",
+            direction="Input"))
+        params[4].value = 512
+        params[4].category = "Model Configuration"
+
         return params
+
+    def updateParameters(self, parameters):
+        """Update parameters dynamically based on model selection"""
+        if parameters[2].altered:
+            model_name = parameters[2].valueAsText
+
+            if model_name in self.model_configs:
+                config = self.model_configs[model_name]
+
+                # Update pretrained backbone dropdown options
+                parameters[3].filter.list = config["backbone_options"]
+
+                # Set default backbone if current value not in new list
+                if parameters[3].value not in config["backbone_options"]:
+                    parameters[3].value = config["default_backbone"]
+
+                # Update image size
+                parameters[4].value = config["recommended_tile_size"]
+        return
 
     def execute(self, parameters, messages):
         try:
             import torch
-            from SegFormer import SegFormer
+            import models
             
             model_file = parameters[0].valueAsText
             num_classes = parameters[1].value
-            pretrained_weights = parameters[2].valueAsText
-            
+            model_architecture = parameters[2].valueAsText
+            backbone = parameters[3].valueAsText
+            image_size = parameters[4].value or 512
+
             arcpy.AddMessage("=" * 80)
             arcpy.AddMessage("Model Validation")
             arcpy.AddMessage("=" * 80)
             
             arcpy.AddMessage("\n[1/3] Loading model checkpoint...")
-            checkpoint = torch.load(model_file, map_location='cpu')
+            _ = torch.load(model_file, map_location='cpu')
             arcpy.AddMessage("✓ Checkpoint loaded")
             
-            arcpy.AddMessage("\n[2/3] Initializing model architecture...")
-            
-            # Create proper dummy dataset
             class DummyDataset:
-                def __init__(self, img_size=512):
+                def __init__(self, img_size):
                     self.dummy_img = torch.zeros(3, img_size, img_size)
-                    
                 def __getitem__(self, idx):
                     return (self.dummy_img, None)
-            
             class DummyData:
-                def __init__(self, n_classes):
+                def __init__(self, n_classes, img_size=512):
                     self.classes = [f"Class{i}" for i in range(n_classes)]
-                    self.train_ds = DummyDataset()
-            
-            dummy_data = DummyData(num_classes)
-            model_wrapper = SegFormer(weights=pretrained_weights, state_dict=model_file)
-            model = model_wrapper.get_model(dummy_data)
+                    self.train_ds = DummyDataset(img_size)
+
+            arcpy.AddMessage("\n[2/3] Initializing model architecture...")
+            dummy_data = DummyData(num_classes, img_size=image_size)
+            model_wrapper : models.ModelClass = getattr(models, model_architecture)()
+            model = model_wrapper.get_model(dummy_data, backbone=backbone, state_dict=model_file)
             arcpy.AddMessage("✓ Model architecture created")
             
             arcpy.AddMessage("\n[3/3] Testing inference...")
             model.eval()
-            test_input = torch.randn(1, 3, 256, 256)
+            test_input = torch.randn(1, 3, image_size, image_size)
             with torch.no_grad():
                 output = model(test_input)
             
             arcpy.AddMessage(f"✓ Inference test successful")
             arcpy.AddMessage(f"  Input shape: {test_input.shape}")
             arcpy.AddMessage(f"  Output shape: {output.shape}")
-            
             arcpy.AddMessage("\n" + "=" * 80)
             arcpy.AddMessage("✓ Model validation passed!")
             arcpy.AddMessage("=" * 80)
