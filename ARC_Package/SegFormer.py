@@ -6,7 +6,7 @@ import torch.nn as nn
 from torch.nn import Module
 # Based on https://developers.arcgis.com/python/latest/guide/add-model-using-model-extension/
 
-class Segformer():
+class SegFormer():
     def __init__(self, weights="nvidia/segformer-b0-finetuned-ade-512-512", state_dict=None):
         """
         Custom Model class to define the model architecture, loss function and input transformations.
@@ -137,8 +137,6 @@ class Segformer():
                 elif 'model_state_dict' in obj:
                     state_dict = obj['model_state_dict']
                 segformer.load_state_dict(state_dict)
-        for param in segformer.decode_head.classifier.parameters(): # type: ignore
-            param.requires_grad = True
         
         self.model = segformer
         return self.model
