@@ -87,17 +87,17 @@ def tile_dataset(data_path: str, combined_images_file: str, combined_labels_file
 
                 print(f"Buffer size reached {chunk_buffer_size} chunks, saving temp files.")
                 
-                # save images and labels to temporary batches for fast concatenation at the end
+                # save images and labels to temporary .npy files for fast concatenation at the end
                 
                 images_to_append = np.concatenate(image_buffer, axis=0)
                 num_images += len(images_to_append)
-                np.save(os.path.join(TEMP_PATH, f"images_{str(batch_num)}"), images_to_append)
-                image_paths.append(os.path.join(TEMP_PATH, f"images_{str(batch_num)}"))
+                np.save(os.path.join(TEMP_PATH, f"images_{str(batch_num)}.npy"), images_to_append)
+                image_paths.append(os.path.join(TEMP_PATH, f"images_{str(batch_num)}.npy"))
         
                 labels_to_append = np.concatenate(label_buffer, axis=0)
                 num_labels += len(labels_to_append)
-                np.save(os.path.join(TEMP_PATH, f"labels_{str(batch_num)}"), labels_to_append)
-                label_paths.append(os.path.join(TEMP_PATH, f"labels_{str(batch_num)}"))
+                np.save(os.path.join(TEMP_PATH, f"labels_{str(batch_num)}.npy"), labels_to_append)
+                label_paths.append(os.path.join(TEMP_PATH, f"labels_{str(batch_num)}.npy"))
                 
                 assert num_images == num_labels
                 
@@ -115,13 +115,13 @@ def tile_dataset(data_path: str, combined_images_file: str, combined_labels_file
 
         images_to_append = np.concatenate(image_buffer, axis=0)
         num_images += len(images_to_append)
-        np.save(os.path.join(TEMP_PATH, f"images_{str(batch_num)}"), images_to_append)
-        image_paths.append(os.path.join(TEMP_PATH, f"images_{str(batch_num)}"))
+        np.save(os.path.join(TEMP_PATH, f"images_{str(batch_num)}.npy"), images_to_append)
+        image_paths.append(os.path.join(TEMP_PATH, f"images_{str(batch_num)}.npy"))
 
         labels_to_append = np.concatenate(label_buffer, axis=0)
         num_labels += len(labels_to_append)
-        np.save(os.path.join(TEMP_PATH, f"labels_{str(batch_num)}"), labels_to_append)
-        label_paths.append(os.path.join(TEMP_PATH, f"labels_{str(batch_num)}"))
+        np.save(os.path.join(TEMP_PATH, f"labels_{str(batch_num)}.npy"), labels_to_append)
+        label_paths.append(os.path.join(TEMP_PATH, f"labels_{str(batch_num)}.npy"))
 
         assert num_images == num_labels
 
