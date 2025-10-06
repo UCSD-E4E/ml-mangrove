@@ -7,10 +7,10 @@ from numpy.lib.format import open_memmap
 from tqdm import tqdm
 import torch
 from torchvision import tv_tensors
-import torchvision.transforms.v2 as T
+import torchvision.transforms.v2 as v2
 
 class MemmapDataset(Dataset):
-    def __init__(self, images, labels, transforms: T.Compose, start: int=0, end: int=-1):
+    def __init__(self, images, labels, transforms: v2.Compose = v2.Compose([v2.ToImage(), v2.ToDtype(torch.float32, scale=True)]), start: int=0, end: int=-1):
         """
         Inputs are expected to be memory mapped numpy arrays (.npy)
 
@@ -81,7 +81,7 @@ class MemmapDataset(Dataset):
                 self.images.flush()
                 self.labels.flush()
 
-    def split(self, split_ratio: float, valid_transforms: T.Compose) -> tuple['MemmapDataset', 'MemmapDataset']:
+    def split(self, split_ratio: float, valid_transforms: v2.Compose) -> tuple['MemmapDataset', 'MemmapDataset']:
         n = self.__len__()
         split_n = int(n * split_ratio)
         train  = MemmapDataset(self.images, self.labels, transforms=self.transforms, start=self.start, end=self.start + split_n)
