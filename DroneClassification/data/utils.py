@@ -58,8 +58,6 @@ def tile_dataset(data_path: str, combined_images_file: str, combined_labels_file
     num_labels = 0
     image_paths = []
     label_paths = []
-    image_shape = ()
-    label_shape = ()
     for entry in os.listdir(data_path):
         if 'Chunk' in entry:
             current_chunk += 1
@@ -70,25 +68,22 @@ def tile_dataset(data_path: str, combined_images_file: str, combined_labels_file
             
             # Generate tiled images and labels
             images, labels = _tile_tiff_pair(chunk_path, image_size=image_size)
-            image_shape = images[0].shape[1:]
-            label_shape = labels[0].shape[1:]
-            
-            if images.size == 0:
-                print(f"No valid tiles found at {chunk_name}")
+            if images.size == 0 or labels.size == 0:
                 continue
             print(f"Number of valid tiles found: {len(images)}")
-            
+
             # Add to buffer
             image_buffer.append(images)
             label_buffer.append(labels)
             
             
             if current_chunk % chunk_buffer_size == 0:
-
-                print(f"Buffer size reached {chunk_buffer_size} chunks, saving temp files.")
-                
+                if chunk_buffer_size > 1:
+                    print(f"Buffer size reached {chunk_buffer_size} chunks, saving temp files.")
+                else:
+                    print(f"Saving temp files...")
+            
                 # save images and labels to temporary .npy files for fast concatenation at the end
-                
                 images_to_append = np.concatenate(image_buffer, axis=0)
                 num_images += len(images_to_append)
                 np.save(os.path.join(TEMP_PATH, f"images_{str(batch_num)}.npy"), images_to_append)
@@ -131,16 +126,14 @@ def tile_dataset(data_path: str, combined_images_file: str, combined_labels_file
         del labels_to_append
         gc.collect()
     
-    images_menmap = np.lib.format.open_memmap(combined_images_file, mode='w+', dtype=np.uint8, shape=(num_images,) + image_shape)
-    labels_menmap = np.lib.format.open_memmap(combined_labels_file, mode='w+', dtype=np.uint8, shape=(num_labels,) + label_shape)
+    images_memmap = np.lib.format.open_memmap(combined_images_file, mode='w+', dtype=np.uint8, shape=(num_images,) + image_shape)
+    labels_memmap = np.lib.format.open_memmap(combined_labels_file, mode='w+', dtype=np.uint8, shape=(num_labels,) + label_shape)
     offset = 0
-    for idx in range(len(image_paths)):
         imgs = np.load(image_paths[idx])
         labels = np.load(label_paths[idx])
         
         num = imgs.shape[0]
-        images_menmap[offset:offset+num] = imgs
-        labels_menmap[offset:offset+num] = labels
+        images_memmap[offset:offset+num] = imgs
         offset += num
         
         del imgs, labels
@@ -150,6 +143,9 @@ def tile_dataset(data_path: str, combined_images_file: str, combined_labels_file
     labels_menmap.flush()
     shutil.rmtree(TEMP_PATH)
     print('\nDone tiling tif pairs')
+    labels_memmap.flush()
+    print("Deleting temporary files...")
+    shutil.rmtree(TEMP_PATH)
 
 def rasterize_shapefiles(path):
     """
@@ -178,6 +174,7 @@ def rasterize_shapefiles(path):
             output_path = os.path.join(chunk_path, 'labels.tif')
             if os.path.exists(output_path):
                 return
+                continue
             else:
                 print(f"Rasterizing {name} shapefile...")
             
@@ -360,7 +357,6 @@ def _align_shapefiles(output_root,
                             if smoothed.area >= min_area:
                                 cleaned.append({"geometry": smoothed, "value": val})
                         elif isinstance(smoothed, MultiPolygon):
-                            for part in smoothed.geoms:
                                 if part.area >= min_area:
                                     cleaned.append({"geometry": part, "value": val})
 
@@ -388,22 +384,8 @@ def _align_shapefiles(output_root,
                         first_file = False
                     shutil.move(fpath, os.path.join(backup_dir, fname))
 
-def _append_to_memmap(file_path, data, dtype):
-    if not os.path.exists(file_path):
-        print(f"Creating new memmap file at {file_path}")
-        new_memmap = np.lib.format.open_memmap(file_path, mode='w+', dtype=dtype, shape=data.shape)
-        new_memmap[:] = data
-    else:
-        existing_shape = np.load(file_path).shape
         new_shape = (existing_shape[0] + data.shape[0],) + existing_shape[1:]
 
-        temp_file_path = file_path + '.tmp'
-        new_memmap = np.lib.format.open_memmap(temp_file_path, mode='w+', dtype=dtype, shape=new_shape)
-
-        
-        old_memmap = np.lib.format.open_memmap(file_path, mode='r')
-        new_memmap[:existing_shape[0]] = old_memmap[:]
-        new_memmap[existing_shape[0]:] = data
 
         new_memmap.flush()
         del new_memmap
@@ -428,6 +410,7 @@ def _create_pairs(rgb_data, label_data, tile_size) -> Tuple[np.ndarray, np.ndarr
     assert images.shape[0] == labels.shape[0], "Mismatch in number of images and labels"
     
     return images, labels
+    return np.array(images), np.array(labels)
 
 def _get_utm_crs(lon, lat):
     """
@@ -499,22 +482,28 @@ def _tile_tiff_pair(chunk_path: str, image_size=224) -> Tuple[np.ndarray, np.nda
         Tiles (Tuple): A tuple containing the image data and label data as numpy arrays.
     """
     name = chunk_path.split('/')[-1]
-    print(f"Processing {name}...")
-
-    # Find file with .tif extension
-    rgb_files = [f for f in os.listdir(chunk_path) if f.endswith('.tif')]
-
-    if not rgb_files:
+    # Find files with .tif extension
+    tif_files = [f for f in os.listdir(chunk_path) if f.endswith('.tif')]
+    if not tif_files:
         print(f"No TIFF files found in {chunk_path}. Skipping...")
         return np.array([]), np.array([])
+    
+    # Find RGB tif
+    if len(tif_files) > 1:
+        # Prefer files that do not start with 'labels'
     rgb_path = os.path.join(chunk_path, rgb_files[0])
 
     # Find label tif
     label_path = os.path.join(chunk_path, "labels")
     label_files = [f for f in os.listdir(label_path) if f.endswith('.tif')]
+        label_path = chunk_path
+        label_files = [f for f in tif_files if f.startswith('labels')]
     if not label_files:
         print(f"No label TIFF files found in {label_path}. Skipping...")
         return np.array([]), np.array([])
+        if not label_files:
+            print(f"No label TIFF files found in {label_path}. Skipping...")
+            return np.array([]), np.array([])
     label_path = os.path.join(label_path, label_files[0])
     
     rgb_data, _ = _read_tiff(rgb_path)
@@ -531,6 +520,7 @@ def _tile_tiff_pair(chunk_path: str, image_size=224) -> Tuple[np.ndarray, np.nda
     images, labels = _create_pairs(rgb_data, label_data, image_size)
 
     assert len(images) == len(labels), "Number of images and labels do not match."
+    if len(images) == 0:
     print(f"Number of valid pairs: {len(images)}")
     
     return images, labels
