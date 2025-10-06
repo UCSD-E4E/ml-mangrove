@@ -16,6 +16,8 @@ from shapely.geometry import shape, Polygon, MultiPolygon
 from typing import Tuple
 from pyproj import CRS
 from tqdm import tqdm
+import tempfile
+import shutil
 
 def make_chunk_dirs(data_path: str, num_chunks: int):
     """
@@ -43,9 +45,22 @@ def tile_dataset(data_path: str, combined_images_file: str, combined_labels_file
 
     num_chunks = len([entry for entry in os.listdir(data_path) if 'Chunk' in entry])
     print(f"Processing {num_chunks} chunk directories")
+    
+    TEMP_PATH = os.path.join(data_path, "temp")
+    if os.path.isdir(TEMP_PATH):
+        shutil.rmtree(TEMP_PATH)
+    else:
+        os.mkdir(TEMP_PATH)
 
     # Iterate over each chunk directory and process TIFF pairs
     current_chunk = 0
+    batch_num = 0
+    num_images = 0
+    num_labels = 0
+    image_paths = []
+    label_paths = []
+    image_shape = ()
+    label_shape = ()
     for entry in os.listdir(data_path):
         if 'Chunk' in entry:
             current_chunk += 1
@@ -56,6 +71,9 @@ def tile_dataset(data_path: str, combined_images_file: str, combined_labels_file
             
             # Generate tiled images and labels
             images, labels = _tile_tiff_pair(chunk_path, image_size=image_size)
+            image_shape = images[0].shape[1:]
+            label_shape = labels[0].shape[1:]
+            
             if images.size == 0:
                 print(f"No valid tiles found at {chunk_name}")
                 continue
@@ -64,36 +82,74 @@ def tile_dataset(data_path: str, combined_images_file: str, combined_labels_file
             # Add to buffer
             image_buffer.append(images)
             label_buffer.append(labels)
-
+            
+            
             if current_chunk % chunk_buffer_size == 0:
 
-                print(f"Buffer size reached {chunk_buffer_size} chunks, appending to memmap.")
-
+                print(f"Buffer size reached {chunk_buffer_size} chunks, saving temp files.")
+                
+                # save images and labels to temporary batches for fast concatenation at the end
+                
                 images_to_append = np.concatenate(image_buffer, axis=0)
-                _append_to_memmap(combined_images_file, images_to_append, np.uint8)
-                image_buffer = []
-                del images_to_append
-
+                num_images += len(images_to_append)
+                np.save(os.path.join(TEMP_PATH, f"images_{str(batch_num)}"), images_to_append)
+                image_paths.append(os.path.join(TEMP_PATH, f"images_{str(batch_num)}"))
+        
                 labels_to_append = np.concatenate(label_buffer, axis=0)
-                _append_to_memmap(combined_labels_file, labels_to_append, np.uint8)
+                num_labels += len(labels_to_append)
+                np.save(os.path.join(TEMP_PATH, f"labels_{str(batch_num)}"), labels_to_append)
+                label_paths.append(os.path.join(TEMP_PATH, f"labels_{str(batch_num)}"))
+                
+                assert num_images == num_labels
+                
+                image_buffer = []
                 label_buffer = []
+                del images_to_append
                 del labels_to_append
                 gc.collect()
+                
+                batch_num += 1
 
     # Final append if buffer is not empty
     if image_buffer:
         print("Appending remaining buffered data to memmap.")
 
         images_to_append = np.concatenate(image_buffer, axis=0)
-        _append_to_memmap(combined_images_file, images_to_append, np.uint8)
-        image_buffer = []
-        del images_to_append
+        num_images += len(images_to_append)
+        np.save(os.path.join(TEMP_PATH, f"images_{str(batch_num)}"), images_to_append)
+        image_paths.append(os.path.join(TEMP_PATH, f"images_{str(batch_num)}"))
 
         labels_to_append = np.concatenate(label_buffer, axis=0)
-        _append_to_memmap(combined_labels_file, labels_to_append, np.uint8)
-        label_buffer = []
-        del labels_to_append
+        num_labels += len(labels_to_append)
+        np.save(os.path.join(TEMP_PATH, f"labels_{str(batch_num)}"), labels_to_append)
+        label_paths.append(os.path.join(TEMP_PATH, f"labels_{str(batch_num)}"))
 
+        assert num_images == num_labels
+
+        image_buffer = []
+        label_buffer = []
+        del images_to_append
+        del labels_to_append
+        gc.collect()
+    
+    images_menmap = np.lib.format.open_memmap(combined_images_file, mode='w+', dtype=np.uint8, shape=(num_images,) + image_shape)
+    labels_menmap = np.lib.format.open_memmap(combined_labels_file, mode='w+', dtype=np.uint8, shape=(num_labels,) + label_shape)
+    offset = 0
+    for idx in range(len(image_paths)):
+        imgs = np.load(image_paths[idx])
+        labels = np.load(label_paths[idx])
+        
+        num = imgs.shape[0]
+        images_menmap[offset:offset+num] = imgs
+        labels_menmap[offset:offset+num] = labels
+        offset += num
+        
+        del imgs, labels
+        gc.collect()
+            
+    images_menmap.flush()
+    labels_menmap.flush()
+    shutil.rmtree(TEMP_PATH)
     print('\nDone tiling tif pairs')
 
 def rasterize_shapefiles(path):
