@@ -122,7 +122,7 @@ def main():
             # Try to import
             sys.path.insert(0, path)
             try:
-                from ARC_Package.models.SegFormer import SegFormer
+                from models import SegFormer
                 print(f"  ✓ Successfully imported SegFormer class")
                 results['segformer'] = True
                 break
@@ -157,7 +157,7 @@ def main():
                     self.classes = ['Background', 'Class1']
                     self.train_ds = DummyDataset()
             
-            from ARC_Package.models.SegFormer import SegFormer
+            from models import SegFormer
             dummy_data = DummyData()
             model_wrapper = SegFormer()
             model = model_wrapper.get_model(dummy_data)

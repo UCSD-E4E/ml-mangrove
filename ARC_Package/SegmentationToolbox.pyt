@@ -1,7 +1,19 @@
 import arcpy # type: ignore
 import os
-from models import *
-from models import ModelClass
+import sys
+
+try:
+    TOOLBOX_DIR = os.path.dirname(os.path.abspath(__file__))
+except NameError:
+    # Fallback if __file__ is not defined
+    TOOLBOX_DIR = os.path.dirname(os.path.abspath(sys.argv[0]))
+
+if TOOLBOX_DIR not in sys.path:
+    sys.path.insert(0, TOOLBOX_DIR)
+
+import ModelClasses as models
+from ModelClasses import *
+from ModelClasses import ModelClass
 import torch
 import numpy as np
 import gc
@@ -50,7 +62,6 @@ class Toolbox(object):
             ModelInfo,
             ValidateModel
         ]
-        self.canRunInBackground = False
 
 class Classify(object):
     """Main classification tool for raster processing"""
@@ -96,7 +107,7 @@ class Classify(object):
         
         # Output Raster
         params.append(arcpy.Parameter(
-            displayName="Output Classified Raster (.tif recommended)",
+            displayName="Output Classified Raster (.tif or geodatabase)",
             name="output_raster",
             datatype="DERasterDataset",
             parameterType="Required",
@@ -134,12 +145,12 @@ class Classify(object):
         
         # Use GPU
         params.append(arcpy.Parameter(
-            displayName="Use GPU (may cause crashes)",
+            displayName="Use GPU if available",
             name="use_gpu",
             datatype="GPBoolean",
             parameterType="Optional",
             direction="Input"))
-        params[7].value = False  # Changed to False for stability
+        params[7].value = True
         params[7].category = "Processing Options"
 
         # Model Configuration Category
@@ -241,12 +252,6 @@ class Classify(object):
             if model_architecture not in self.model_configs:
                 arcpy.AddError(f"Unsupported model architecture: {model_architecture}")
                 return
-            try:
-                import models
-            except ImportError as e:
-                arcpy.AddError(f"Cannot import module: {e}")
-                arcpy.AddError("Ensure your models.py file is in the Python path")
-                return
             
             # Validate inputs
             if not os.path.exists(input_raster):
@@ -334,7 +339,6 @@ class Classify(object):
                 device = torch.device('cuda')
                 arcpy.AddMessage(f"✓ GPU available: {torch.cuda.get_device_name(0)}")
                 arcpy.AddMessage(f"  VRAM: {torch.cuda.get_device_properties(0).total_memory / 1e9:.2f} GB")
-                arcpy.AddWarning("  Note: GPU mode may be unstable in ArcGIS Pro")
                 
                 # Set conservative GPU settings
                 torch.backends.cudnn.benchmark = False
@@ -355,7 +359,6 @@ class Classify(object):
 
     def _load_model_class(self, model_architecture, messages) -> ModelClass:
         """Load the model based on architecture"""
-        import models
         try:
             # Get model class dynamically
             config = self.model_configs[model_architecture]
@@ -506,9 +509,11 @@ class Classify(object):
                     prediction = model_class.post_process(output)
 
                 # Extract valid region
-                pred = prediction[:y_size, :x_size]
+                pred = prediction[0, :y_size, :x_size]
                 
                 # Write result
+                pred = pred.squeeze(0) if pred.dim() == 3 else pred
+                pred = pred.cpu().numpy().astype(np.uint8)
                 dst_band.WriteArray(pred, x_off, y_off)
                 processed += 1
                 
@@ -568,6 +573,7 @@ class Classify(object):
             torch.cuda.empty_cache()
 
     def _finalize_output(self, output_path, class_names, messages):
+        # TODO: Add class names to raster attribute table
         """Build pyramids and statistics"""
         try:
             is_gdb = '.gdb' in output_path.lower() or '.sde' in output_path.lower()
@@ -759,7 +765,6 @@ class ValidateModel(object):
     def execute(self, parameters, messages):
         try:
             import torch
-            import models
             
             model_file = parameters[0].valueAsText
             num_classes = parameters[1].value
@@ -787,7 +792,7 @@ class ValidateModel(object):
 
             arcpy.AddMessage("\n[2/3] Initializing model architecture...")
             dummy_data = DummyData(num_classes, img_size=image_size)
-            model_wrapper : models.ModelClass = getattr(models, model_architecture)()
+            model_wrapper : ModelClass = getattr(models, self.model_configs[model_architecture]["class_name"])()
             model = model_wrapper.get_model(dummy_data, backbone=backbone, state_dict=model_file)
             arcpy.AddMessage("✓ Model architecture created")
             
