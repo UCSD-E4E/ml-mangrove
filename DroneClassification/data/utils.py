@@ -70,8 +70,8 @@ def tile_dataset(data_path: str, combined_images_file: str, combined_labels_file
             
             # Generate tiled images and labels
             images, labels = _tile_tiff_pair(chunk_path, image_size=image_size)
-            image_shape = images[0].shape[1:]
-            label_shape = labels[0].shape[1:]
+            image_shape = images[0].shape
+            label_shape = labels[0].shape
             
             if images.size == 0:
                 print(f"No valid tiles found at {chunk_name}")
