@@ -1,0 +1,10 @@
+{
+  "model": "SegFormer B2",
+  "optimizer": "adamw",
+  "scheduler": "cosine",
+  "learning_rate": 0.0001,
+  "weight_decay": 0.0001,
+  "batch_size": 32,
+  "num_epochs": 30,
+  "device": "cuda"
+}
