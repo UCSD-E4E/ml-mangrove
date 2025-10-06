@@ -49,8 +49,7 @@ def tile_dataset(data_path: str, combined_images_file: str, combined_labels_file
     TEMP_PATH = os.path.join(data_path, "temp")
     if os.path.isdir(TEMP_PATH):
         shutil.rmtree(TEMP_PATH)
-    else:
-        os.mkdir(TEMP_PATH)
+    os.mkdir(TEMP_PATH)
 
     # Iterate over each chunk directory and process TIFF pairs
     current_chunk = 0
