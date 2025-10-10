@@ -4,11 +4,11 @@ This repo includes all development and tools related to the Machine Learning Dev
 
 We are working on two related projects: Mangrove Area Estimation and Human Activity Segmentation. 
 
-The Mangrove Area Estimation project involves using machine learning models to identify mangroves from drone imagery. The satellite super-resolution project aims to expand the capabilities of our mangrove identification models by enhancing satellite imagery to allow us to precisely track and identify mangroves anywhere on Earth without needing to deploy drones.
+The Mangrove Area Estimation project involves using machine learning models to identify mangroves from drone imagery. We perform binary segmentation on aerial images to label pixels as either mangrove or not mangrove.
 
 The Human Activity project intends to detect human-made structures that pose a threat to mangroves. This includes things like roads and buildings, which each cause harm to the ecosystem. We are currently looking for appropriate datasets that will generalize well to mangrove environs.
 
-
+The satellite super-resolution project (Currently Discontinued) aims to expand the capabilities of our mangrove identification models by enhancing satellite imagery to allow us to precisely track and identify mangroves anywhere on Earth without needing to deploy drones. It was discontinued because our classifiers do not function well even at the super-resolved resolution.
 
 ### Current Classification Models:
 
