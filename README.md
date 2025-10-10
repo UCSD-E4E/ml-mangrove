@@ -59,7 +59,7 @@ The ARC_Package folder contains the toolbox for ArcGIS Pro and the template for 
 
 ## ArcGIS interface
 ### Frontend
-- Optimize UI to filter available models by task
+- Optimize UI to filter available models by task (Mangrove Classification / Human vs Natural Classification)
 - Abstract input image size, output channels/names, and model weights by packaging into the models
 
 ### Backend
