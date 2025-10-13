@@ -8,6 +8,7 @@ from tqdm import tqdm
 import torch
 from torchvision import tv_tensors
 import torchvision.transforms.v2 as v2
+from typing import Optional
 
 class MemmapDataset(Dataset):
     def __init__(self, images, labels, transforms: v2.Compose = v2.Compose([v2.ToImage(), v2.ToDtype(torch.float32, scale=True)]), start: int=0, end: int=-1):
@@ -19,7 +20,7 @@ class MemmapDataset(Dataset):
         Args:
             images (np.memmap): Memory mapped numpy array of images
             labels (np.memmap): Memory mapped numpy array of labels
-            transforms (T.Compose): Optional torchvision transforms to apply to each image
+            transforms (T.Compose): Optional torchvision v2 transforms to apply to each image
             start (int): Start index for slicing the dataset (default: 0)
             end (int): End index for slicing the dataset (default: None, which means the end of the dataset)
         """
@@ -62,7 +63,13 @@ class MemmapDataset(Dataset):
 
         return image, label
 
-    def shuffle(self):
+    def shuffle(self, flush_interval: Optional[int] = None):
+        """Shuffle the dataset in place using the Fisher-Yates shuffle algorithm.
+        
+        Parameters:
+            flush_interval (int, optional): If provided, flush datasets to disk every `flush_interval' iterations. 
+                This is helpful for windows systems, since they are terrible at memory management with large datasets.
+        """
         # Check if dataset is read only
         if self.images.flags.writeable == False or self.labels.flags.writeable == False:
             print("Dataset is read-only and cannot be shuffled. To shuffle, reopen the dataset with writable copies (r+).")
@@ -77,7 +84,7 @@ class MemmapDataset(Dataset):
             self.images[i], self.images[j] = self.images[j], self.images[i]
             self.labels[i], self.labels[j] = self.labels[j], self.labels[i]
 
-            if i % 5000 == 0:
+            if flush_interval is not None and flush_interval > 0 and i % flush_interval == 0:
                 self.images.flush()
                 self.labels.flush()
 
@@ -226,7 +233,6 @@ def _memmap_concat(memmap1, memmap2, chunk_size, output_path):
 
     print(f"Resulting output array shape: {out.shape}, dtype: {out.dtype}")
     del a, b, out
-
 
 def memmap_copy(src: np.memmap, dst_path: str, source_indices=None, dest_indices=None, chunk=1024):
     """    
