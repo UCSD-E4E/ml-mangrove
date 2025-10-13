@@ -96,6 +96,33 @@ class JaccardLoss(nn.Module):
         # Return 1 - mean IoU as loss
         return 1 - iou.mean()
     
+class CEJaccardLoss(nn.Module):
+    """
+    Combined Cross Entropy and Jaccard Loss
+    """
+    def __init__(self, num_classes=1, ignore_index=255, smooth=1e-6, weight: Optional[torch.Tensor] = None):
+        super(CEJaccardLoss, self).__init__()
+        if num_classes == 1:
+            self.binary = True
+            if weight is not None and len(weight) == 2:
+                pos_weight = weight[1] / weight[0]
+                weight = torch.tensor([pos_weight]).to(weight.device)
+            self.ce_loss = nn.BCEWithLogitsLoss(pos_weight=weight)
+        else:
+            self.binary = False
+            self.ce_loss = nn.CrossEntropyLoss(weight=weight, ignore_index=ignore_index)
+        self.jaccard_loss = JaccardLoss(num_classes, ignore_index, smooth)
+        
+    def forward(self, predictions, targets):
+        if self.binary:
+            targets = targets.float()
+            if targets.max() > 1:
+                targets = targets / targets.max()
+        ce = self.ce_loss(predictions, targets)
+        jaccard = self.jaccard_loss(predictions, targets)
+        combined_loss = 0.5 * ce + 0.5 * jaccard
+        return combined_loss
+    
 class FocalJaccardLoss(nn.Module):
     """
     Focal Jaccard Loss - focuses on hard examples by applying a focal term to the Jaccard loss
@@ -348,7 +375,6 @@ class ConvNextPerceptualLoss(nn.Module):
         )
         
         return loss
-
 
 class FocalLoss(nn.Module):
     """
