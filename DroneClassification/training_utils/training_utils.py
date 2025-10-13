@@ -13,6 +13,7 @@ from datetime import datetime
 from typing import Callable, List, Optional, Union, Tuple
 from torch.amp.grad_scaler import GradScaler
 from torch.amp.autocast_mode import autocast
+import psutil
 
 def setup_device():
     """
@@ -31,8 +32,6 @@ def setup_device():
         print("WARNING: No GPU found. Defaulting to CPU.")
 
     return DEVICE
-
-
 
 class TrainingSession:
     """ Initializes the training session with the model, data loaders, loss function, and training parameters.
@@ -83,13 +82,13 @@ class TrainingSession:
                  experiment_name: str = None, # type: ignore
                  save_checkpoints: bool = True):
         
-        self.model = model.to(self.device)
         self.trainLoader = trainLoader
         self.testLoader = testLoader
         self.lossFunc = lossFunc
         self.init_lr = init_lr
         self.num_epochs = num_epochs
         self.device = setup_device() if device is None else device
+        self.model = model.to(self.device)
         self.validation_dataset_names = validation_dataset_names
         self.epoch_print_frequency = epoch_print_frequency
         self.optimizer = optimizer if optimizer else AdamW(self.model.parameters(), lr=self.init_lr, weight_decay=weight_decay)
@@ -558,26 +557,158 @@ class TrainingSession:
             plt.savefig(self.experiment_dir / 'training_loss.png', dpi=150, bbox_inches='tight')
         plt.show()
 
-def calculate_class_weights(labels_path, classes, power=2.0):
-    num_classes = len(classes)
-    labels = np.load(labels_path, mmap_mode='r')
-    unique, counts = np.unique(labels, return_counts=True)
-    weights = np.ones(num_classes)
-    total_pixels = counts.sum()
-
-    print("Class distribution:")
-    class_names = list(classes.values())
-    for class_id, count in zip(unique, counts):
-        if 0 <= class_id < len(class_names):
-            pct = 100 * count / total_pixels
-            print(f"  {class_names[class_id]:15}: {count:10,} pixels ({pct:5.1f}%)")
-        
-    for class_id, count in zip(unique, counts):
-        if 0 <= class_id < num_classes:
-            frequency = count / total_pixels
-            # Use power to make weights more extreme
-            weights[class_id] = (1.0 / frequency) ** power
+def calculate_class_weights(labels_path: str, classes: dict, power=2.0):
+    """
+    Calculate class weights from labels file.
     
-    # Normalize so average weight is 1
-    weights = weights / weights.mean()
-    return torch.FloatTensor(weights)
+    Args:
+        labels_path: Path to .npy file with labels
+            - Shape (B, H, W): Single-class (B is batch)
+            - Shape (B, C, H, W) where C=1: Single-class
+            - Shape (B, C, H, W) where C>1: Multi-class
+        classes: dict mapping indices to names
+            - Single: {0: "Background", 1: "Mangrove"}
+            - Multi-key: {(0, 1): "Class_A", (1, 0): "Class_B", (1, 1): "Class_C"}
+        power: Exponent for weight calculation
+    
+    Returns:
+        torch.FloatTensor of weights for each class
+    """
+    labels = np.load(labels_path, mmap_mode='r')
+    print(f"Labels shape: {labels.shape}, dtype: {labels.dtype}")
+
+    chunk_size = _get_optimal_chunk_size(labels.shape, labels.dtype)
+
+    # Determine if one-hot or single-class
+    ndim = len(labels.shape)
+    
+    if ndim == 3:
+        # (B, H, W) - single class
+        single_class = True
+        one_hot = False
+        multikey = False
+    elif ndim == 4:
+        # (B, C, H, W)
+        multikey = isinstance(list(classes.keys())[0], tuple)
+        num_channels = labels.shape[1]
+        single_class = num_channels == 1 and not multikey
+        one_hot = (num_channels == len(classes)) and not multikey
+    else:
+        raise ValueError(f"Unexpected label shape: {labels.shape}")
+    
+    # Sanity check
+    if multikey:
+        if not all(isinstance(k, tuple) and len(k) == num_channels for k in classes.keys()):
+            raise ValueError("For multi-key classes, keys must be tuples matching number of channels.")
+    elif single_class:
+        if not all(isinstance(k, int) for k in classes.keys()):
+            raise ValueError("For single-class, keys must be integers.")
+    elif one_hot:
+        if not all(isinstance(k, int) and 0 <= k < num_channels for k in classes.keys()):
+            raise ValueError("For one-hot, keys must be integers in range of number of channels.")
+        if len(classes) != num_channels:
+            print(f"Warning: Number of classes does not match number of channels. got {len(classes)} classes, vs {num_channels} channels.")
+
+    # Initialize counts dictionary
+    class_counts = {class_idx: 0 for class_idx in classes.keys()}
+
+    for label_idx in tqdm(range(0, labels.shape[0], chunk_size), desc="Counting classes"):
+        label_chunk = labels[label_idx:label_idx+chunk_size]
+        
+        if single_class:
+            # (B, H, W) - flatten and count each class value efficiently
+            flat_labels = label_chunk.flatten()
+
+            for class_idx in classes.keys():
+                class_counts[class_idx] += (flat_labels == class_idx).sum()
+        
+        elif multikey:
+            # (B, C, H, W) - classes defined by channel combinations
+            # Reshape to (N, C) where N = B * H * W
+            batch_size = label_chunk.shape[0]
+            num_channels = label_chunk.shape[1]
+            reshaped = label_chunk.reshape(batch_size, num_channels, -1)  # (B, C, H*W)
+            reshaped = reshaped.transpose(0, 2, 1).reshape(-1, num_channels)  # (B*H*W, C)
+            
+            for class_key in classes.keys():
+                # class_key is a tuple like (0, 1) representing channel values
+                # Create a mask for pixels matching this combination
+                mask = np.ones(reshaped.shape[0], dtype=bool)
+                for channel_idx, channel_value in enumerate(class_key):
+                    mask &= (reshaped[:, channel_idx] == channel_value)
+                count = np.sum(mask)
+                class_counts[class_key] += count        
+        
+        elif one_hot:
+            # (B, C, H, W) where C matches number of classes - count positive pixels per channel
+            for class_idx in classes.keys():
+                count = np.sum(label_chunk[:, class_idx] > 0)
+                class_counts[class_idx] += count
+        else:
+            # (B, C, H, W) where C != number of classes - use argmax
+            flat_labels = np.argmax(label_chunk, axis=1).flatten()
+            for class_idx in classes.keys():
+                count = np.sum(flat_labels == class_idx)
+                class_counts[class_idx] += count
+
+    # Print distribution
+    total = sum(class_counts.values())
+    print("\nClass distribution:")
+    for class_idx, count in class_counts.items():
+        pct = 100 * count / total
+        print(f"  {classes[class_idx]:15}: {count:10,} pixels ({pct:5.1f}%)")
+
+    # Convert counts to weights using inverse frequency
+    class_weights = {}
+    for class_idx, count in class_counts.items():
+        if count > 0:
+            frequency = count / total
+            class_weights[class_idx] = (1.0 / frequency) ** power
+        else:
+            print(f"Warning: No pixels found for {classes[class_idx]}")
+            class_weights[class_idx] = 1.0
+
+    # Normalize weights so mean is 1.0
+    weights_array = np.array([class_weights[i] for i in sorted(classes.keys())])
+    weights_array = weights_array / weights_array.mean()
+    
+    print("\nNormalized class weights:")
+    for i, class_idx in enumerate(sorted(classes.keys())):
+        print(f"  {classes[class_idx]:15}: {weights_array[i]:.4f}")
+
+    return torch.FloatTensor(weights_array)
+
+def _get_optimal_chunk_size(array_shape, array_dtype, safety_factor=0.3, max_chunk_size=10000):
+    """
+    Calculate optimal chunk size based on available RAM.
+    
+    Args:
+        array_shape: Shape of the array to process (e.g., (B, H, W) or (B, C, H, W))
+        array_dtype: Data type of the array
+        safety_factor: Fraction of available RAM to use (default 0.3 = 30%)
+        max_chunk_size: Maximum chunk size regardless of RAM (default 10000 samples)
+    
+    Returns:
+        Optimal chunk size (number of batch samples)
+    """
+    # Get available RAM in bytes
+    available_ram = psutil.virtual_memory().available
+    
+    # Calculate bytes per batch sample (one complete item from batch dimension)
+    bytes_per_sample = np.dtype(array_dtype).itemsize * np.prod(array_shape[1:])
+    
+    # Calculate how many batch samples we can fit in available RAM
+    usable_ram = available_ram * safety_factor
+    max_samples_by_ram = int(usable_ram / bytes_per_sample)
+    
+    # Limit chunk size for reasonable iteration speed and progress updates
+    chunk_size = min(max_samples_by_ram, max_chunk_size)
+    
+    # Chunk size shouldn't exceed total batch size
+    batch_size = array_shape[0]
+    chunk_size = min(chunk_size, batch_size)
+    
+    # Ensure minimum chunk size of 1
+    chunk_size = max(chunk_size, 1)
+    
+    return chunk_size
