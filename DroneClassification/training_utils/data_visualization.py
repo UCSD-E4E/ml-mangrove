@@ -127,7 +127,7 @@ def compare_series_by_resolution(title: str,
             single_metric=False
         )
 
-def visualize_segmentation_results(model, dataset, raw_images, sample_idx=0, class_names=None, device='cpu'):
+def visualize_segmentation_results(model, dataset, raw_images, sample_idx=0, class_names=None, device: torch.device = torch.device('cpu')):
     """
     Properly visualize segmentation results with denormalized images
     """
