@@ -16,6 +16,7 @@ class LandmassLoss(nn.Module):
         super(LandmassLoss, self).__init__()
     def forward(self, prediction, target):
         return (prediction.sum() - target.sum()) / (target.sum() + 1)
+
 class JaccardLoss(nn.Module):
     """
     Jaccard Loss (IoU Loss) for segmentation
@@ -34,29 +35,52 @@ class JaccardLoss(nn.Module):
         self.num_classes = num_classes
         self.ignore_index = ignore_index
         self.smooth = smooth
-        self.weight = weight
-        
+
+        if num_classes == 1:
+            if weight is not None:
+                if len(weight) == 2:
+                    weight = weight[1].detach().clone().float().to(weight.device)
+                elif len(weight) > 2:
+                    print(f"Warning: weight shape of {weight.shape} is invalid, ignoring weight")
+                    weight = None
+            self.ce = nn.BCEWithLogitsLoss(pos_weight=weight)
+        else:
+            if weight is not None:
+                if len(weight.shape) == num_classes:
+                    weight = torch.tensor(weight, dtype=torch.float32).to(weight.device)
+                else:
+                    print(f"Warning: weight shape of {weight.shape} is invalid, ignoring weight")
+                    weight = None
+            self.ce = nn.CrossEntropyLoss(weight=weight, ignore_index=ignore_index)
+
     def forward(self, predictions, targets):
         """
         Args:
             predictions: [B, C, H, W] - model logits
             targets: [B, H, W] or [B, 1, H, W] - ground truth class indices
         """
+        logits = predictions
         
         # Normalize target shape first
         if targets.dim() == 4 and targets.shape[1] == 1:
             targets = targets.squeeze(1)  # [B, 1, H, W] -> [B, H, W]
+
+        # Handle ignore mask
+        if self.ignore_index is not None:
+            valid_mask = (targets != self.ignore_index).float()
+        else:
+            valid_mask = torch.ones_like(targets, dtype=torch.float32)
         
+        # --- IoU computation ---
         if self.num_classes > 1:
             # Multi-class case
             predictions = F.softmax(predictions, dim=1)  # [B, C, H, W]
             targets_onehot = F.one_hot(targets, num_classes=self.num_classes).permute(0, 3, 1, 2).float()  # [B, C, H, W]
             
             # Handle ignore_index
-            if self.ignore_index is not None:
-                mask = (targets != self.ignore_index).float().unsqueeze(1)  # [B, 1, H, W]
-                predictions = predictions * mask
-                targets_onehot = targets_onehot * mask
+            valid_mask = valid_mask.unsqueeze(1)  # [B, 1, H, W]
+            predictions = predictions * valid_mask
+            targets_onehot = targets_onehot * valid_mask
             
             # Calculate intersection and union
             intersection = (predictions * targets_onehot).sum(dim=(2, 3))  # [B, C]
@@ -64,65 +88,27 @@ class JaccardLoss(nn.Module):
             
         else:
             # Binary case
-            if predictions.shape[1] == 2:
-                predictions = F.softmax(predictions, dim=1)[:, 1]  # [B, H, W]
-            else:
-                predictions = torch.sigmoid(predictions.squeeze(1))  # [B, H, W]
-            
-            # Ensure targets is float and same shape as predictions [B, H, W]
+            predictions = torch.sigmoid(predictions.squeeze(1))  # [B, H, W]
             targets = targets.float()
             
-            # Handle ignore_index
-            if self.ignore_index is not None:
-                mask = (targets != self.ignore_index).float()  # [B, H, W]
-                predictions = predictions * mask
-                targets = targets * mask
-            
-            # Add channel dimension for consistent operations
-            predictions = predictions.unsqueeze(1)  # [B, 1, H, W]
-            targets = targets.unsqueeze(1)  # [B, 1, H, W]
+            predictions = predictions * valid_mask
+            targets = targets * valid_mask
             
             # Calculate intersection and union
-            intersection = (predictions * targets).sum(dim=(2, 3))  # [B, 1]
-            union = predictions.sum(dim=(2, 3)) + targets.sum(dim=(2, 3)) - intersection  # [B, 1]
+            intersection = (predictions * targets).sum(dim=(1, 2))  # [B, 1]
+            union = predictions.sum(dim=(1, 2)) + targets.sum(dim=(1, 2)) - intersection  # [B, 1]
         
-        # Calculate IoU
         iou = (intersection + self.smooth) / (union + self.smooth)
+        jaccard_loss = 1 - iou.mean()
         
-        # Apply class weights if provided
-        if self.weight is not None:
-            iou = iou * self.weight.to(iou.device)
-        
-        # Return 1 - mean IoU as loss
-        return 1 - iou.mean()
-    
-class CEJaccardLoss(nn.Module):
-    """
-    Combined Cross Entropy and Jaccard Loss
-    """
-    def __init__(self, num_classes=1, ignore_index=255, smooth=1e-6, weight: Optional[torch.Tensor] = None):
-        super(CEJaccardLoss, self).__init__()
-        if num_classes == 1:
-            self.binary = True
-            if weight is not None and len(weight) == 2:
-                pos_weight = weight[1] / weight[0]
-                weight = torch.tensor([pos_weight]).to(weight.device)
-            self.ce_loss = nn.BCEWithLogitsLoss(pos_weight=weight)
+        # --- CE/BCE computation ---
+        if self.num_classes > 1:
+            ce_loss = self.ce(logits, targets)
         else:
-            self.binary = False
-            self.ce_loss = nn.CrossEntropyLoss(weight=weight, ignore_index=ignore_index)
-        self.jaccard_loss = JaccardLoss(num_classes, ignore_index, smooth)
-        
-    def forward(self, predictions, targets):
-        if self.binary:
-            targets = targets.float()
-            if targets.max() > 1:
-                targets = targets / targets.max()
-        ce = self.ce_loss(predictions, targets)
-        jaccard = self.jaccard_loss(predictions, targets)
-        combined_loss = 0.5 * ce + 0.5 * jaccard
-        return combined_loss
-    
+            ce_loss = self.ce(logits.squeeze(1), targets.float())
+
+        return 0.5 * ce_loss + 0.5 * jaccard_loss
+
 class FocalJaccardLoss(nn.Module):
     """
     Focal Jaccard Loss - focuses on hard examples by applying a focal term to the Jaccard loss
