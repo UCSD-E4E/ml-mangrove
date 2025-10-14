@@ -47,7 +47,7 @@ def tile_dataset(data_path: str, combined_images_file: str, combined_labels_file
         combined_labels_file (str): Path to save the combined label memmap file.
         chunk_buffer_size (int): Number of chunks to process before writing to memmap.
         image_size (int): Size of the image tiles to be created.
-        filter_monolithic_labels (float, optional): If set, filters label tiles with a single class at a rate of the given float (0 to 1).
+        filter_monolithic_labels (float, optional): If set, filters uninformative label tiles with a single class at a rate of the given float (0 to 1).
     """
     # Buffer for storing data before appending to memmap
     image_buffer = []
@@ -398,12 +398,15 @@ def _align_shapefiles(output_root,
                         first_file = False
                     shutil.move(fpath, os.path.join(backup_dir, fname))
 
-def _create_pairs(rgb_data, label_data, tile_size, filter_monolithic_labels: Optional[float]=None) -> Tuple[np.ndarray, np.ndarray]:
+def _create_pairs(rgb_data, label_data, tile_size, filter_monolithic_labels: Optional[float]=None, ignore_value=255) -> Tuple[np.ndarray, np.ndarray]:
     images = []
     labels = []
     for (rgb_tile, _), (label_tile, _) in zip(_tile_generator(rgb_data, tile_size), _tile_generator(label_data, tile_size)):
         if filter_monolithic_labels is not None:
-            unique = np.unique(label_tile)
+            non_ignore = label_tile[label_tile != ignore_value]
+            unique = np.unique(non_ignore)
+            if non_ignore.size == 0:
+                continue  # Skip tiles with only ignore values
             if len(unique) == 1:
                 if np.random.rand() < filter_monolithic_labels:
                     continue  # Skip this tile
@@ -472,7 +475,6 @@ def _read_tiff(tif_path):
         print(f"Error reading {tif_path}")
         return None, None
     
-
 def _tile_generator(data, tile_size):
     nrows, ncols = data.shape[1], data.shape[2]
     for i, j in product(range(0, nrows, tile_size), range(0, ncols, tile_size)):
@@ -539,7 +541,7 @@ def _tile_tiff_pair(chunk_path: str, image_size=224, filter_monolithic_labels: O
         label_meta['nodata'] = 255  # Set nodata value if not defined
 
     # Create pairs of tiles
-    images, labels = _create_pairs(rgb_data, label_data, image_size, filter_monolithic_labels=filter_monolithic_labels)
+    images, labels = _create_pairs(rgb_data, label_data, image_size, ignore_value=label_meta['nodata'], filter_monolithic_labels=filter_monolithic_labels)
 
     assert len(images) == len(labels), "Number of images and labels do not match."
     
