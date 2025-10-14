@@ -5,6 +5,7 @@ from torch.utils.data import DataLoader
 import torch.nn as nn
 from torch.optim import AdamW
 import torch.optim as optim
+import torch.nn.functional as F
 from tqdm import tqdm
 from pathlib import Path
 import json
@@ -70,7 +71,7 @@ class TrainingSession:
     def __init__(self, model: nn.Module,
                  trainLoader: DataLoader,
                  testLoader: Union[DataLoader, List[DataLoader]], 
-                 lossFunc: Callable, 
+                 lossFunc: Callable,
                  init_lr: float = 0.001, 
                  num_epochs: int = 10, 
                  device: Optional[torch.device] = None,
@@ -80,7 +81,9 @@ class TrainingSession:
                  scheduler: Optional[torch.optim.lr_scheduler._LRScheduler] = None,
                  weight_decay: float = 1e-4,
                  experiment_name: str = None, # type: ignore
-                 save_checkpoints: bool = True):
+                 save_checkpoints: bool = True,
+                 threshold: float = 0.5,
+                 ignore_index: int = 255):
         
         self.trainLoader = trainLoader
         self.testLoader = testLoader
@@ -95,7 +98,10 @@ class TrainingSession:
         self.scheduler = scheduler if scheduler else optim.lr_scheduler.CosineAnnealingLR(self.optimizer, T_max=self.num_epochs)
         self.weight_decay = weight_decay
         self.save_checkpoints = save_checkpoints
-        
+        self.threshold = threshold
+        self.ignore_index = ignore_index
+        self.num_classes = self.model.num_classes if hasattr(self.model, 'num_classes') else None
+
         self.scaler = GradScaler(device=self.device.type) if self.device.type in ['cuda', 'cpu'] else None
         self.batch_size = trainLoader.batch_size if trainLoader.batch_size is not None else 1
         self.training_loss = []
@@ -194,19 +200,17 @@ class TrainingSession:
             if self.scaler:
                 with autocast(device_type=self.device.type):
                     pred = self.model(x)
-                    if isinstance(pred, tuple):
-                        pred = pred[0]
+                    pred = pred[0] if isinstance(pred, tuple) else pred
                     loss = self.lossFunc(pred, y)
                 self.scaler.scale(loss).backward()
                 self.scaler.step(self.optimizer)
                 self.scaler.update()
             else:
                 pred = self.model(x)
-                self.optimizer.step()
+                pred = pred[0] if isinstance(pred, tuple) else pred
                 loss = self.lossFunc(pred, y)
                 loss.backward()
-            if isinstance(pred, tuple):
-                pred = pred[0]
+                self.optimizer.step()
             
             # Gather loss
             total_loss += loss.item()
@@ -230,12 +234,11 @@ class TrainingSession:
                     pred = self.model(x)
             else:
                 pred = self.model(x)
-            if isinstance(pred, tuple):
-                pred = pred[0]
             
-            metrics = self._calculate_segmentation_metrics(pred, y)
             loss = self.lossFunc(pred, y)
             total_loss += loss.item()
+
+            metrics = self._calculate_segmentation_metrics(pred, y)
             
             for key, value in metrics.items():
                 if key in all_metrics:
@@ -265,6 +268,7 @@ class TrainingSession:
         if predictions.shape[1] == 1:
             # Binary segmentation -> sigmoid + threshold
             pred_classes = (torch.sigmoid(predictions) > 0.5).long().squeeze(1)  # [B,H,W]
+            pred_classes = pred_classes.clamp(0, 1)  # Ensure binary
         else:
             # Multi-class segmentation -> argmax
             pred_classes = torch.argmax(predictions, dim=1)  # [B,H,W]
@@ -282,12 +286,9 @@ class TrainingSession:
         pred_flat = pred_classes.flatten()
         target_flat = targets.flatten()
         
-        # Handle ignore index (common values: 255, -1)
-        ignore_index = getattr(self.lossFunc, 'ignore_index', None)
-        if ignore_index is not None and ignore_index != -100:  # -100 is default (no ignore)
-            mask = target_flat != ignore_index
-            pred_flat = pred_flat[mask]
-            target_flat = target_flat[mask]
+        mask = target_flat != self.ignore_index
+        pred_flat = pred_flat[mask]
+        target_flat = target_flat[mask]
         
         
         # Overall pixel accuracy
