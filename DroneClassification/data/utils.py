@@ -17,6 +17,7 @@ from typing import Tuple
 from pyproj import CRS
 from tqdm import tqdm
 import shutil
+from typing import Optional
 
 def make_chunk_dirs(data_path: str, num_chunks: int):
     """
@@ -36,8 +37,18 @@ def make_chunk_dirs(data_path: str, num_chunks: int):
         os.makedirs(labels_dir, exist_ok=True)
     print(f"Created {num_chunks} chunk directories in {data_path}")
 
-def tile_dataset(data_path: str, combined_images_file: str, combined_labels_file: str, chunk_buffer_size: int=1, image_size=224):
-        
+def tile_dataset(data_path: str, combined_images_file: str, combined_labels_file: str, chunk_buffer_size: int=1, image_size=224, filter_monolithic_labels: Optional[float]=None):
+    """
+    Tiles all TIFF pairs in the specified data path into smaller images and labels of the given size
+    and saves them as memory-mapped numpy arrays.
+    Args:
+        data_path (str): Path to the directory containing chunk directories with TIFF pairs.
+        combined_images_file (str): Path to save the combined image memmap file.
+        combined_labels_file (str): Path to save the combined label memmap file.
+        chunk_buffer_size (int): Number of chunks to process before writing to memmap.
+        image_size (int): Size of the image tiles to be created.
+        filter_monolithic_labels (float, optional): If set, filters label tiles with a single class at a rate of the given float (0 to 1).
+    """
     # Buffer for storing data before appending to memmap
     image_buffer = []
     label_buffer = []
@@ -66,7 +77,7 @@ def tile_dataset(data_path: str, combined_images_file: str, combined_labels_file
             chunk_path = os.path.join(data_path, entry)
             
             # Generate tiled images and labels
-            images, labels = _tile_tiff_pair(chunk_path, image_size=image_size)
+            images, labels = _tile_tiff_pair(chunk_path, image_size=image_size, filter_monolithic_labels=filter_monolithic_labels)
             if images.size == 0 or labels.size == 0:
                 continue
 
@@ -154,7 +165,10 @@ def rasterize_shapefiles(path):
         path (str): Path to the directory of chunks containing the shapefile and TIFF.
     """
 
-    for entry in tqdm(os.listdir(path), desc="Searching for shapefiles", unit="file"):
+    num_entries = [e for e in os.listdir(path) if "Chunk" in e]
+    entry_num = 0
+
+    for entry in os.listdir(path):
         if 'Chunk' in entry:
             chunk_path = os.path.join(path, entry)
             name = chunk_path.split('/')[-1]
@@ -175,12 +189,12 @@ def rasterize_shapefiles(path):
             if os.path.exists(output_path):
                 continue
             else:
-                print(f"Rasterizing {name} shapefile...")
+                print(f"Rasterizing {name} shapefile... ({entry_num+1}/{len(num_entries)})")
             
             gdf = _read_all_layers(shapefile_folder)
             if gdf is None:
                 print(f"Failed to read {name} shapefile. Please check shape data.\n")
-                return
+                continue
             
             label_column = None
             for col in ['label', 'labels', 'class']:
@@ -191,9 +205,9 @@ def rasterize_shapefiles(path):
             if not label_column:
                 print(f"\n{name} shapefile does not have a 'label', 'labels', or 'class' column. Please check shape data.")
                 print(f"Columns found: {gdf.columns}\n")
-                return
-            
-            gdf[label_column] = gdf[label_column].replace({"1": 1, "0": 0, "mangrove": 1, "non-mangrove": 0})
+                continue
+
+            gdf[label_column] = (gdf[label_column].replace({"1": 1, "0": 0, "mangrove": 1, "non-mangrove": 0}).infer_objects(copy=False))
             gdf[label_column] = pd.to_numeric(gdf[label_column], errors='coerce').replace([np.inf, -np.inf], np.nan).astype(np.float32)
             gdf[label_column] = gdf[label_column].apply(lambda x: np.nan if x > 255 else x).astype(np.float32)
             gdf[label_column] = gdf[label_column].fillna(255).astype(np.uint8)
@@ -207,7 +221,7 @@ def rasterize_shapefiles(path):
                     gdf.loc[~gdf.is_valid, 'geometry'] = gdf.loc[~gdf.is_valid, 'geometry'].geometry.apply(make_valid)
                 if not gdf.is_valid.all():
                     print(f"Failed to fix invalid geometries in {name} shapefile. Please check shape data.\n")
-                    return
+                    continue
                 print(f"Fixed invalid geometries in {name} shapefile.\n")
             
             with rasterio.open(tiff_path) as src:
@@ -218,7 +232,7 @@ def rasterize_shapefiles(path):
                     shapes = ((geom, value) for geom, value in zip(gdf.geometry, gdf[label_column]))
                     burned = rasterize(shapes=shapes, out_shape=src.shape, fill=255, transform=src.transform, dtype=rasterio.uint8)
                     out_raster.write_band(1, burned)
-        print('\nDone rasterizing shapefiles')
+    print('\nDone rasterizing shapefiles')
 
 def resample(input_root: str, output_root: str, target_resolution: float, save_backup_labels: bool = False):
     """
@@ -384,10 +398,15 @@ def _align_shapefiles(output_root,
                         first_file = False
                     shutil.move(fpath, os.path.join(backup_dir, fname))
 
-def _create_pairs(rgb_data, label_data, tile_size) -> Tuple[np.ndarray, np.ndarray]:
+def _create_pairs(rgb_data, label_data, tile_size, filter_monolithic_labels: Optional[float]=None) -> Tuple[np.ndarray, np.ndarray]:
     images = []
     labels = []
     for (rgb_tile, _), (label_tile, _) in zip(_tile_generator(rgb_data, tile_size), _tile_generator(label_data, tile_size)):
+        if filter_monolithic_labels is not None:
+            unique = np.unique(label_tile)
+            if len(unique) == 1:
+                if np.random.rand() < filter_monolithic_labels:
+                    continue  # Skip this tile
         images.append(rgb_tile)
         labels.append(label_tile)
     
@@ -412,6 +431,9 @@ def _get_utm_crs(lon, lat):
     })
 
 def _read_all_layers(shapefile_folder):
+    if os.listdir(shapefile_folder) == []:
+        print(f"No shapefiles found in {shapefile_folder}")
+        return None
     shapefile_path = [os.path.join(shapefile_folder, f) for f in os.listdir(shapefile_folder) if f.endswith('.shp')][0]
     combined_gdf_list = []
 
@@ -452,7 +474,7 @@ def _tile_generator(data, tile_size):
         if i + tile_size <= nrows and j + tile_size <= ncols:
             yield data[:, i:i+tile_size, j:j+tile_size], (i, j)
 
-def _tile_tiff_pair(chunk_path: str, image_size=224) -> Tuple[np.ndarray, np.ndarray]:
+def _tile_tiff_pair(chunk_path: str, image_size=224, filter_monolithic_labels: Optional[float]=None) -> Tuple[np.ndarray, np.ndarray]:
     """
     Reads a chunk directory containing a TIFF image and its corresponding label TIFF, creates tile pairs of each in the specified size,
     and returns the image and label tiles as numpy arrays.
@@ -470,12 +492,17 @@ def _tile_tiff_pair(chunk_path: str, image_size=224) -> Tuple[np.ndarray, np.nda
         return np.array([]), np.array([])
     
     # Find RGB tif
+    rgb_files = []
     if len(tif_files) > 1:
         # Prefer files that do not start with 'labels'
         rgb_files = [f for f in tif_files if not f.startswith('labels')]
-        if not rgb_files:
+        if rgb_files == []:
             print(f"No valid RGB TIFF files found in {chunk_path}. Skipping...")
             return np.array([]), np.array([])
+    elif len(tif_files) == 1:
+        rgb_files = tif_files
+    else:
+        return np.array([]), np.array([])
     rgb_path = os.path.join(chunk_path, rgb_files[0])
 
     # Find label tif
@@ -504,7 +531,7 @@ def _tile_tiff_pair(chunk_path: str, image_size=224) -> Tuple[np.ndarray, np.nda
         label_meta['nodata'] = 255  # Set nodata value if not defined
 
     # Create pairs of tiles
-    images, labels = _create_pairs(rgb_data, label_data, image_size)
+    images, labels = _create_pairs(rgb_data, label_data, image_size, filter_monolithic_labels=filter_monolithic_labels)
 
     assert len(images) == len(labels), "Number of images and labels do not match."
     
