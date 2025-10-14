@@ -16,98 +16,115 @@ class LandmassLoss(nn.Module):
         super(LandmassLoss, self).__init__()
     def forward(self, prediction, target):
         return (prediction.sum() - target.sum()) / (target.sum() + 1)
-
 class JaccardLoss(nn.Module):
     """
     Jaccard Loss (IoU Loss) for segmentation
-    
     This loss directly optimizes the Intersection over Union metric
+    Combined with Cross-Entropy/BCE loss for better gradient flow
     """
-    def __init__(self, num_classes=1, ignore_index=255, smooth=1e-6, weight=None):
+    def __init__(self, num_classes=1, ignore_index=255, smooth=1e-6, 
+                 weight: Optional[torch.Tensor] = None, alpha=0.5):
         """
         Args:
             num_classes: Number of segmentation classes
             ignore_index: Index to ignore in loss calculation (default: 255)
             smooth: Smoothing factor to avoid division by zero
             weight: Optional class weights for handling imbalance
+            alpha: Weight between CE and Jaccard loss (0.5 = equal weight)
         """
         super(JaccardLoss, self).__init__()
         self.num_classes = num_classes
         self.ignore_index = ignore_index
         self.smooth = smooth
-
+        self.alpha = alpha
+        
         if num_classes == 1:
+            # Binary segmentation
             if weight is not None:
-                if len(weight) == 2:
-                    weight = weight[1].detach().clone().float().to(weight.device)
-                elif len(weight) > 2:
-                    print(f"Warning: weight shape of {weight.shape} is invalid, ignoring weight")
+                if weight.shape[0] == 2:
+                    weight = weight[1].float()
+                elif weight.shape[0] > 2:
+                    print(f"Warning: weight shape of {weight.shape} is invalid for binary classification, ignoring weight")
                     weight = None
-            self.ce = nn.BCEWithLogitsLoss(pos_weight=weight)
+            self.ce = nn.BCEWithLogitsLoss(pos_weight=weight, reduction='none')
         else:
+            # Multi-class segmentation
             if weight is not None:
-                if len(weight.shape) == num_classes:
-                    weight = torch.tensor(weight, dtype=torch.float32).to(weight.device)
-                else:
-                    print(f"Warning: weight shape of {weight.shape} is invalid, ignoring weight")
+                if weight.shape[0] != num_classes:
+                    print(f"Warning: weight shape of {weight.shape} is invalid for {num_classes} classes, ignoring weight")
                     weight = None
-            self.ce = nn.CrossEntropyLoss(weight=weight, ignore_index=ignore_index)
-
-    def forward(self, predictions, targets):
+            self.ce = nn.CrossEntropyLoss(weight=weight, ignore_index=ignore_index, reduction='none')
+    
+    def forward(self, logits, labels):
         """
         Args:
-            predictions: [B, C, H, W] - model logits
-            targets: [B, H, W] or [B, 1, H, W] - ground truth class indices
+            logits: [B, C, H, W] - model logits
+            labels: [B, H, W] or [B, 1, H, W] - ground truth class indices
+        
+        Returns:
+            Combined loss: alpha * CE + (1 - alpha) * Jaccard
         """
-        logits = predictions
+        # Ensure labels are [B, H, W]
+        if labels.dim() == 4 and labels.shape[1] == 1:
+            labels = labels.squeeze(1)
         
-        # Normalize target shape first
-        if targets.dim() == 4 and targets.shape[1] == 1:
-            targets = targets.squeeze(1)  # [B, 1, H, W] -> [B, H, W]
-
-        # Handle ignore mask
-        if self.ignore_index is not None:
-            valid_mask = (targets != self.ignore_index).float()
-        else:
-            valid_mask = torch.ones_like(targets, dtype=torch.float32)
+        # Create mask for valid pixels (not ignore_index)
+        valid_mask = (labels != self.ignore_index)
         
-        # --- IoU computation ---
+        # --- Cross-Entropy / BCE Loss ---
         if self.num_classes > 1:
-            # Multi-class case
-            predictions = F.softmax(predictions, dim=1)  # [B, C, H, W]
-            targets_onehot = F.one_hot(targets, num_classes=self.num_classes).permute(0, 3, 1, 2).float()  # [B, C, H, W]
+            ce_loss = self.ce(logits, labels)
+            ce_loss = (ce_loss * valid_mask).sum() / (valid_mask.sum() + self.smooth)
+        else:
+            ce_loss = self.ce(logits.squeeze(1), labels.float())
+            ce_loss = (ce_loss * valid_mask).sum() / (valid_mask.sum() + self.smooth)
+        
+        # --- Jaccard (IoU) Loss ---
+        if self.num_classes == 1:
+            # Binary segmentation
+            probs = torch.sigmoid(logits.squeeze(1))
             
-            # Handle ignore_index
-            valid_mask = valid_mask.unsqueeze(1)  # [B, 1, H, W]
-            predictions = predictions * valid_mask
-            targets_onehot = targets_onehot * valid_mask
+            # Apply mask
+            probs_masked = probs * valid_mask
+            targets_masked = labels.float() * valid_mask
             
-            # Calculate intersection and union
-            intersection = (predictions * targets_onehot).sum(dim=(2, 3))  # [B, C]
-            union = predictions.sum(dim=(2, 3)) + targets_onehot.sum(dim=(2, 3)) - intersection
+            # Flatten
+            probs_flat = probs_masked.view(-1)
+            targets_flat = targets_masked.view(-1)
+            
+            # IoU calculation
+            intersection = (probs_flat * targets_flat).sum()
+            union = probs_flat.sum() + targets_flat.sum() - intersection
+            iou = (intersection + self.smooth) / (union + self.smooth)
             
         else:
-            # Binary case
-            predictions = torch.sigmoid(predictions.squeeze(1))  # [B, H, W]
-            targets = targets.float()
+            # Multi-class segmentation
+            probs = F.softmax(logits, dim=1)  # [B, C, H, W]
             
-            predictions = predictions * valid_mask
-            targets = targets * valid_mask
+            # One-hot encode labels
+            labels_one_hot = F.one_hot(labels.clamp(0, self.num_classes - 1), 
+                                       num_classes=self.num_classes)  # [B, H, W, C]
+            labels_one_hot = labels_one_hot.permute(0, 3, 1, 2).float()  # [B, C, H, W]
             
-            # Calculate intersection and union
-            intersection = (predictions * targets).sum(dim=(1, 2))  # [B, 1]
-            union = predictions.sum(dim=(1, 2)) + targets.sum(dim=(1, 2)) - intersection  # [B, 1]
+            # Apply mask to both predictions and targets
+            valid_mask_expanded = valid_mask.unsqueeze(1)  # [B, 1, H, W]
+            probs_masked = probs * valid_mask_expanded
+            labels_masked = labels_one_hot * valid_mask_expanded
+            
+            # Compute per-class IoU
+            intersection = (probs_masked * labels_masked).sum(dim=(0, 2, 3))
+            union = (probs_masked + labels_masked).sum(dim=(0, 2, 3)) - intersection
+            iou_per_class = (intersection + self.smooth) / (union + self.smooth)
+            
+            # Average IoU across classes
+            iou = iou_per_class.mean()
         
-        iou = (intersection + self.smooth) / (union + self.smooth)
-        jaccard_loss = 1 - iou.mean()
+        jaccard_loss = 1 - iou
         
-        # --- CE/BCE computation ---
-        if self.num_classes > 1:
-            ce_loss = self.ce(logits, targets)
-        else:
-            ce_loss = self.ce(logits.squeeze(1), targets.float())
-
-        return 0.5 * ce_loss + 0.5 * jaccard_loss
+        # Combined loss
+        total_loss = self.alpha * ce_loss + (1 - self.alpha) * jaccard_loss
+        
+        return total_loss
 
 class FocalJaccardLoss(nn.Module):
     """
