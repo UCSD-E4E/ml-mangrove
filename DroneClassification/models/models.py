@@ -2,9 +2,7 @@ import torch
 import torch.nn as nn
 import numpy as np
 from torch.nn import Conv2d, Module
-from torchgeo.models import resnet18, get_weight
 import torchvision
-from torchvision import transforms
 from torchvision.models import densenet121, DenseNet121_Weights
 from torchvision.models import resnet18 as tv_resnet18
 from transformers import SegformerForSemanticSegmentation
@@ -115,7 +113,6 @@ class ResNet_UNet(Module):
 
         return x
 
-    
 class DenseNet_UNet(Module):
     """
     - https://pytorch.org/vision/main/models/generated/torchvision.models.densenet121.html#torchvision.models.densenet121
@@ -262,7 +259,6 @@ class SegFormer(Module):
     def train_backbone(self):
         for param in self.segformer.parameters():
             param.requires_grad = True
-
 
 class ResNet_FC(Module):
     """
