@@ -221,7 +221,6 @@ class SegFormer(Module):
 
         self.segformer = SegformerForSemanticSegmentation.from_pretrained(
             weights,
-            num_labels=num_classes,
             ignore_mismatched_sizes=True
         )
 
