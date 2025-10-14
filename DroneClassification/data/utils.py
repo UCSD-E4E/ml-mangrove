@@ -463,10 +463,15 @@ def _read_all_layers(shapefile_folder):
         return None
 
 def _read_tiff(tif_path):
-    with rasterio.open(tif_path) as src:
-        data = src.read()
-        meta = src.meta
-    return data, meta
+    try:
+        with rasterio.open(tif_path) as src:
+            data = src.read()
+            meta = src.meta
+        return data, meta
+    except:
+        print(f"Error reading {tif_path}")
+        return None, None
+    
 
 def _tile_generator(data, tile_size):
     nrows, ncols = data.shape[1], data.shape[2]
@@ -522,6 +527,9 @@ def _tile_tiff_pair(chunk_path: str, image_size=224, filter_monolithic_labels: O
     
     rgb_data, _ = _read_tiff(rgb_path)
     label_data, label_meta = _read_tiff(label_path)
+
+    if rgb_data is None or label_data is None or label_meta is None:
+        return np.array([]), np.array([])
 
     # Ensure we are only using the first three channels (RGB)
     if rgb_data.shape[0] > 3:
