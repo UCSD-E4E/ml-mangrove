@@ -5,7 +5,6 @@ from torch.utils.data import DataLoader
 import torch.nn as nn
 from torch.optim import AdamW
 import torch.optim as optim
-import torch.nn.functional as F
 from tqdm import tqdm
 from pathlib import Path
 import json
@@ -105,17 +104,16 @@ class TrainingSession:
         self.scaler = GradScaler(device=self.device.type) if self.device.type in ['cuda', 'cpu'] else None
         self.batch_size = trainLoader.batch_size if trainLoader.batch_size is not None else 1
         self.training_loss = []
+        self.metrics = []
 
         # Multiple test loaders handling
         if isinstance(testLoader, list):
             self.multiple_test_loaders = True
-            self.validation_metrics = [[{} for _ in range(self.num_epochs)] for _ in range(len(testLoader))]
             if validation_dataset_names is not None and len(validation_dataset_names) != len(testLoader):
                 print("WARNING: Number of validation dataset names does not match the number of test loaders.")
                 self.validation_dataset_names = [f"Dataset {i + 1}" for i in range(len(testLoader))]
         else:
             self.multiple_test_loaders = False
-            self.validation_metrics = self.num_epochs * [{}]
         
         # Best model tracking
         self.best_metric = 0.0
@@ -127,39 +125,31 @@ class TrainingSession:
         if save_checkpoints:
             self.experiment_dir.mkdir(parents=True, exist_ok=True)
             self._setup_logging()
-        
-    
-    def learn(self) -> Tuple[List[float], List[Union[dict, List[dict]]]]:
-        """ Training with logging and checkpointing
-        
-            Returns:
-                List[float]: training loss for each epoch,
-                List[Union[dict, List[dict]]]: validation metrics for each epoch
-        """
 
+
+    def learn(self):
+        """ Training with logging and checkpointing
+        """
         if hasattr(self, 'logger'):
             self.logger.info(f"Starting training: {self.num_epochs} epochs")
             self.logger.info(f"Model parameters: {sum(p.numel() for p in self.model.parameters()):,}")
         
-        training_loss = []
-        all_metrics = []
-        
         for epoch in range(self.num_epochs):
             # Training phase
             epoch_loss = self._train_epoch(epoch)
-            training_loss.append(epoch_loss)
+            self.training_loss.append(epoch_loss)
             
             # Validation phase
             if isinstance(self.testLoader, list):
                 epoch_metrics = []
                 for i, loader in enumerate(self.testLoader):
                     epoch_metrics.append(self.evaluate(loader))
-                all_metrics.append(epoch_metrics)
+                self.metrics.append(epoch_metrics)
                 current_metric = epoch_metrics[-1].get('IOU', 0)
                 is_best = current_metric > self.best_metric
             else:
                 metrics = self.evaluate(self.testLoader)
-                all_metrics.append(metrics)
+                self.metrics.append(metrics)
                 current_metric = metrics.get('IOU', 0)
                 is_best = current_metric > self.best_metric
             
@@ -169,10 +159,10 @@ class TrainingSession:
             
             # Logging
             if (epoch + 1) % self.epoch_print_frequency == 0 or epoch == 0:
-                self._log_epoch_results(epoch, epoch_loss, all_metrics[-1] if not isinstance(self.testLoader, list) else epoch_metrics)
-            
+                self._log_epoch_results(epoch, epoch_loss, self.metrics[-1] if not isinstance(self.testLoader, list) else epoch_metrics)
+
             # Save checkpoint
-            self.save_checkpoint(epoch + 1, all_metrics[-1] if not isinstance(self.testLoader, list) else epoch_metrics, is_best) # type: ignore
+            self.save_checkpoint(epoch + 1, self.metrics[-1] if not isinstance(self.testLoader, list) else epoch_metrics, is_best) # type: ignore
             
             # Update scheduler
             if isinstance(self.scheduler, optim.lr_scheduler.ReduceLROnPlateau):
@@ -183,7 +173,8 @@ class TrainingSession:
         if hasattr(self, 'logger'):
             self.logger.info(f"Training completed! Best metric: {self.best_metric:.4f} at epoch {self.best_epoch + 1}")
         
-        return training_loss, all_metrics
+        self.plot_loss()
+        self.plot_metrics("Final Epoch Metrics", metrics=self.get_available_metrics())
     
     def _train_epoch(self, epoch):
         """Train single epoch"""
@@ -386,21 +377,21 @@ class TrainingSession:
             'metrics': metrics,
             'best_metric': self.best_metric,
             'training_loss': self.training_loss,
-            'validation_metrics': self.validation_metrics
+            'validation_metrics': self.metrics
         }
         
         # Save latest
-        torch.save(checkpoint, self.experiment_dir / 'latest.pth')
+        torch.save(checkpoint, self.experiment_dir / 'latest_checkpoint.pth')
         
         # Save best
         if is_best:
-            torch.save(checkpoint, self.experiment_dir / 'best.pth')
+            self.save_model(self.experiment_dir)
             if hasattr(self, 'logger'):
                 self.logger.info(f"New best model saved at epoch {epoch}")
         
         # Save periodic checkpoints
         if epoch % 10 == 0:
-            torch.save(checkpoint, self.experiment_dir / f'epoch_{epoch}.pth')
+            torch.save(checkpoint, self.experiment_dir / f'epoch_{epoch}_checkpoint.pth')
     
     def load_checkpoint(self, path):
         """Load model checkpoint"""
@@ -426,7 +417,7 @@ class TrainingSession:
 
     def save_model(self, path):
         """Save only model weights to file"""
-        torch.save(self.model.state_dict(), path)
+        torch.save(self.model.state_dict(), path / 'best_model.pth')
     
 
     def _log_epoch_results(self, epoch, train_loss, val_metrics):
@@ -458,43 +449,43 @@ class TrainingSession:
     
     def get_available_metrics(self) -> List[str]:
         """Returns a list of available metrics from the validation metrics."""
-        if not self.validation_metrics or self.validation_metrics == []:
+        if not self.metrics or self.metrics == []:
             print("No validation metrics available. Please run learn() first.")
             return []
-        return list(self.validation_metrics[0].keys() if isinstance(self.validation_metrics[0], dict) else self.validation_metrics[0][0].keys())
+        return list(self.metrics[0].keys() if isinstance(self.metrics[0], dict) else self.metrics[0][0].keys())
 
     def get_metrics(self):
         """Returns the validation metrics for every epoch."""
-        if not self.validation_metrics or self.validation_metrics == []:
+        if not self.metrics or self.metrics == []:
             print("No validation metrics available. Please run learn() first.")
             return []
-        return self.validation_metrics
+        return self.metrics
 
     def plot_metrics(self, title, metrics=('Precision','Recall','IOU')):
         """Plot metrics with enhanced visualization"""
-        if not self.validation_metrics:
+        if not self.metrics:
             print("No metrics to plot. Run training first.")
             return
             
         plt.figure(figsize=(12, 8))
         
         if self.multiple_test_loaders:
-            n_loaders = len(self.validation_metrics[0])
+            n_loaders = len(self.metrics[0])
             names = (self.validation_dataset_names if self.validation_dataset_names and len(self.validation_dataset_names)==n_loaders
                     else [f"Dataset {i+1}" for i in range(n_loaders)])
-            n_epochs = len(self.validation_metrics)
+            n_epochs = len(self.metrics)
             xs = np.arange(1, n_epochs+1)
 
             for i in range(n_loaders):
                 for m in metrics:
-                    ys = [epoch_metrics[i].get(m, np.nan) for epoch_metrics in self.validation_metrics]
+                    ys = [epoch_metrics[i].get(m, np.nan) for epoch_metrics in self.metrics]
                     label = f"{names[i]} - {m}" if len(metrics) > 1 else f"{names[i]}"
                     plt.plot(xs, ys, label=label, marker='o', markersize=3)
         else:
-            n_epochs = len(self.validation_metrics)
+            n_epochs = len(self.metrics)
             xs = np.arange(1, n_epochs+1)
             for m in metrics:
-                ys = [epoch_dict.get(m, np.nan) if isinstance(epoch_dict, dict) else np.nan for epoch_dict in self.validation_metrics]
+                ys = [epoch_dict.get(m, np.nan) if isinstance(epoch_dict, dict) else np.nan for epoch_dict in self.metrics]
                 plt.plot(xs, ys, label=m, marker='o', markersize=3)
 
         plt.title(title, fontsize=14)
@@ -505,13 +496,13 @@ class TrainingSession:
         plt.ylim(0, 1.1)
         
         if hasattr(self, 'experiment_dir') and self.save_checkpoints:
-            plt.savefig(self.experiment_dir / f'metrics_{title.replace(" ", "_").lower()}.png', 
+            plt.savefig(self.experiment_dir / f'{title.replace(" ", "_").lower()}.png', 
                        dpi=150, bbox_inches='tight')
         plt.show()
 
-    def plot_loss(self, title: str = "Training and Validation Loss", y_max: float = 0.3, training_time=None):
+    def plot_loss(self, title: str = "Training and Validation Loss", y_max: float = 1.0, training_time=None):
         """Enhanced loss plotting"""
-        if not self.training_loss or not self.validation_metrics:
+        if not self.training_loss or not self.metrics:
             raise ValueError("Training loss or validation metrics are not available. Please run learn() first.")
         
         plt.figure(figsize=(12, 8))
@@ -522,18 +513,18 @@ class TrainingSession:
         
         # Validation loss
         if self.multiple_test_loaders:
-            n_loaders = len(self.validation_metrics[0])
+            n_loaders = len(self.metrics[0])
             names = (self.validation_dataset_names 
                     if self.validation_dataset_names and len(self.validation_dataset_names) == n_loaders
                     else [f"Dataset {i+1}" for i in range(n_loaders)])
 
             for i in range(n_loaders):
-                validation_loss = [epoch_metrics[i]['Loss'] for epoch_metrics in self.validation_metrics]
+                validation_loss = [epoch_metrics[i]['Loss'] for epoch_metrics in self.metrics]
                 valid_loss = [min(x, y_max) for x in validation_loss]
                 plt.plot(np.arange(1, len(valid_loss)+1), valid_loss,
                         label=f"{names[i]} - Validation Loss", linestyle='dashed', linewidth=2)
         else:
-            validation_loss = [m['Loss'] for m in self.validation_metrics if isinstance(m, dict) and 'Loss' in m]
+            validation_loss = [m['Loss'] for m in self.metrics if isinstance(m, dict) and 'Loss' in m]
             valid_loss = [min(x, y_max) for x in validation_loss]
             plt.plot(np.arange(1, len(valid_loss)+1), valid_loss, label="Validation Loss", 
                     linestyle='dashed', linewidth=2)
