@@ -1,12 +1,6 @@
 # WSL2 + CUDA Setup Guide for Mamba Integration
 
-**Purpose**: Set up Linux environment on Windows for training Mamba models while keeping your existing Windows workflow intact.
-
-**Timeline**: ~1-2 hours (depending on download speeds)
-
----
-
-## Key Version Requirements (Tested & Working)
+## Key Version Requirements
 
 After extensive testing, these specific versions are required for mamba-ssm to work correctly:
 
@@ -32,7 +26,7 @@ After extensive testing, these specific versions are required for mamba-ssm to w
 
 ---
 
-## Step 1: Install WSL2 (15-30 minutes)
+## Step 1: Install WSL2
 
 ### 1.1 Enable WSL2 (PowerShell as Administrator)
 
@@ -70,7 +64,7 @@ wsl --set-version Ubuntu 2
 
 ---
 
-## Step 2: Update Ubuntu (5-10 minutes)
+## Step 2: Update Ubuntu
 
 Open Ubuntu terminal (search "Ubuntu" in Start menu):
 
@@ -84,7 +78,7 @@ sudo apt install -y build-essential wget git curl
 
 ---
 
-## Step 3: Install NVIDIA Drivers (Windows side - 10 minutes)
+## Step 3: Install NVIDIA Drivers (Windows side)
 
 **Important**: Install NVIDIA drivers on Windows, NOT in WSL2.
 
@@ -106,7 +100,7 @@ Download latest driver from: https://www.nvidia.com/Download/index.aspx
 
 ---
 
-## Step 4: Install CUDA in WSL2 (20-30 minutes)
+## Step 4: Install CUDA in WSL2
 
 **Important**: Do NOT install NVIDIA drivers in WSL2, only CUDA toolkit!
 
@@ -159,7 +153,7 @@ nvcc --version
 
 ---
 
-## Step 5: Install Miniconda (10 minutes)
+## Step 5: Install Miniconda
 
 ```bash
 # Download Miniconda
@@ -180,7 +174,7 @@ rm Miniconda3-latest-Linux-x86_64.sh
 
 ---
 
-## Step 6: Create Mamba Environment (15-20 minutes)
+## Step 6: Create Mamba Environment
 
 ### 6.1 Navigate to Your Repo
 
@@ -221,7 +215,7 @@ python -c "import torch; print(f'PyTorch: {torch.__version__}'); print(f'CUDA av
 
 ---
 
-## Step 7: Install Mamba-SSM (10-15 minutes)
+## Step 7: Install Mamba-SSM
 
 ```bash
 # Make sure you're in mamba-env
@@ -240,17 +234,13 @@ pip install causal-conv1d --no-binary causal-conv1d --no-build-isolation
 # Install mamba-ssm from source (this will compile CUDA kernels - takes 5-10 minutes!)
 pip install mamba-ssm --no-binary mamba-ssm --no-build-isolation
 
-# Verify installation
-python -c "import mamba_ssm; print('✓ Mamba-SSM installed successfully!')"
 ```
 
 **Note**: The `--no-binary` flag forces compilation from source against your specific PyTorch version. This is critical for avoiding C++ ABI compatibility issues.
 
-**If this fails**: Check troubleshooting section below.
-
 ---
 
-## Step 8: Install Project Dependencies (5 minutes)
+## Step 8: Install Project Dependencies
 
 ```bash
 # Still in /mnt/c/vscode workspace/ml-mangrove
@@ -269,34 +259,7 @@ python -m ipykernel install --user --name=mamba-env --display-name="Python (Mamb
 
 ---
 
-## Step 9: Test Everything Works (10 minutes)
-
-### 9.1 Test Mamba Installation
-
-```bash
-# Navigate to test notebook directory
-cd "/mnt/c/vscode workspace/ml-mangrove/DroneClassification/testing/mamba"
-
-# Run test notebook from command line
-jupyter nbconvert --to notebook --execute 01_test_mamba.ipynb --output 01_test_mamba_wsl2.ipynb
-```
-
-### 9.2 Or use Jupyter in browser
-
-```bash
-# Start Jupyter
-jupyter notebook --no-browser
-
-# Copy the URL with token (e.g., http://localhost:8888/?token=...)
-# Paste in your Windows browser
-# Open 01_test_mamba.ipynb
-# Select kernel: "Python (Mamba-WSL2)"
-# Run all cells
-```
-
----
-
-## Step 10: VSCode Integration (Optional - 5 minutes)
+## Step 9: VSCode Integration
 
 Connect VSCode to WSL2 for seamless development:
 
@@ -318,32 +281,11 @@ Connect VSCode to WSL2 for seamless development:
 ## Workflow After Setup
 
 ### Daily Usage:
-
-**Option A: Terminal-based**
-```bash
-# In Ubuntu terminal:
-cd "/mnt/c/vscode workspace/ml-mangrove"
-conda activate mamba-env
-
-# Run training
-jupyter nbconvert --to notebook --execute DroneClassification/testing/mamba/04_train_mamba.ipynb
-```
-
-**Option B: VSCode (recommended)**
 1. Open VSCode
 2. Click green bottom-left corner → "Reopen in WSL"
 3. Open notebook
 4. Select "Python (Mamba-WSL2)" kernel
 5. Run cells normally
-
-**Option C: Jupyter in browser**
-```bash
-# In WSL2:
-cd "/mnt/c/vscode workspace/ml-mangrove"
-conda activate mamba-env
-jupyter notebook --no-browser
-# Copy URL to Windows browser
-```
 
 ---
 
@@ -364,118 +306,6 @@ cd "/mnt/c/vscode workspace/ml-mangrove"
 ```
 
 **Recommendation**: Keep your repo on Windows (`/mnt/c/`) so both environments can easily access it.
-
----
-
-## Troubleshooting
-
-### Issue: `nvidia-smi` not working in WSL2
-
-**Solution**:
-```powershell
-# In PowerShell (Windows):
-wsl --shutdown
-# Wait 10 seconds
-# Reopen Ubuntu terminal
-```
-
-If still not working:
-- Update NVIDIA driver on Windows to 510.06+
-- Restart computer
-
----
-
-### Issue: `mamba-ssm` installation fails
-
-**Error 1**: "undefined symbol" errors (C++ ABI mismatch)
-```bash
-# This means mamba-ssm was compiled against a different PyTorch version
-# Solution: Force rebuild from source
-conda activate mamba-env
-pip cache purge
-pip uninstall -y mamba-ssm causal-conv1d
-pip install causal-conv1d --no-binary causal-conv1d --no-build-isolation
-pip install mamba-ssm --no-binary mamba-ssm --no-build-isolation
-```
-
-**Error 2**: "GLIBCXX_3.4.32 not found"
-```bash
-# Update C++ standard library
-conda activate mamba-env
-conda install -c conda-forge libstdcxx-ng -y
-```
-
-**Error 3**: NumPy version conflict
-```bash
-# Downgrade to NumPy 1.x
-pip install "numpy<2.0"
-# Then rebuild mamba-ssm (see Error 1)
-```
-
-**Error 4**: "torch.library has no attribute 'custom_op'"
-```bash
-# PyTorch version is too old (< 2.4)
-# Upgrade to PyTorch 2.4.1:
-pip uninstall -y torch torchvision torchaudio
-pip install torch==2.4.1 torchvision==0.19.1 torchaudio==2.4.1 --index-url https://download.pytorch.org/whl/cu121
-# Then rebuild mamba-ssm (see Error 1)
-```
-
-**Error 5**: Compilation errors
-```bash
-# Install build dependencies:
-sudo apt install -y build-essential ninja-build
-pip install packaging ninja
-```
-
----
-
-### Issue: Jupyter kernel not found
-
-```bash
-conda activate mamba-env
-python -m ipykernel install --user --name=mamba-env --display-name="Python (Mamba-WSL2)" --force
-
-# Restart Jupyter/VSCode
-```
-
----
-
-### Issue: Out of memory during training
-
-WSL2 uses dynamic memory allocation. To set limits:
-
-Create/edit `C:\Users\<YourUsername>\.wslconfig`:
-```ini
-[wsl2]
-memory=16GB
-processors=8
-swap=8GB
-```
-
-Then restart WSL:
-```powershell
-wsl --shutdown
-```
-
----
-
-## Performance Tips
-
-### 1. Use Windows filesystem for shared access
-- Keep code on `/mnt/c/` (Windows side)
-- Slightly slower, but accessible from both environments
-- Good for development
-
-### 2. Or use WSL filesystem for max speed
-- Clone repo to `~/ml-mangrove` (Linux side)
-- Faster I/O during training
-- Access from Windows via `\\wsl$\Ubuntu\home\<user>\ml-mangrove`
-
-### 3. Recommended split:
-- **Code/notebooks**: Windows filesystem (`/mnt/c/`)
-- **Large datasets**: WSL filesystem (`~/data/`)
-- **Model checkpoints**: Either (depends on where you need them)
 
 ---
 
