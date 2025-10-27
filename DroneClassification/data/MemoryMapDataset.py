@@ -81,8 +81,14 @@ class MemmapDataset(Dataset):
         for i in range(self.end - 1, self.start, -1):
             print(f"Percent Shuffled: {100*(dataset_size-i)/dataset_size:.2f}%", end='\r')
             j = np.random.randint(self.start, i+1)
-            self.images[i], self.images[j] = self.images[j], self.images[i]
-            self.labels[i], self.labels[j] = self.labels[j], self.labels[i]
+            temp_img = self.images[j].copy()
+            temp_label = self.labels[j].copy()
+
+            self.images[j] = self.images[i]
+            self.labels[j] = self.labels[i]
+
+            self.images[i] = temp_img
+            self.labels[i] = temp_label
 
             if flush_interval is not None and flush_interval > 0 and i % flush_interval == 0:
                 self.images.flush()
