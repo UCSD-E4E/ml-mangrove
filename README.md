@@ -1,75 +1,70 @@
-# Mangrove Monitoring : Machine Learning
+# Mangrove Monitoring: Machine Learning
 
-This repo includes all development and tools related to the Machine Learning Development of the Mangrove Monitoring Project. Most of our active work is within the drone classification folder. We are working on two related projects: Mangrove Area Estimation and Human Activity Segmentation. 
+This repo includes all the tools and testing related to ML development for the Mangrove Monitoring Project, which consists of four main areas: Aerial Mangrove Identification, Drone-Satellite Fusion Methods, Human Infrastructure Identification, and an ArcGIS Toolbox package.
 
-The Mangrove Area Estimation project involves using machine learning models to identify mangroves from drone imagery. We perform binary segmentation on aerial images to label pixels as either mangrove or not mangrove.
+## Mangrove ID
+Binary segmentation on aerial images to label pixels as mangrove or not mangrove.
 
-The Human Activity project intends to detect human-made structures that pose a threat to mangroves. This includes things like roads and buildings, which each cause harm to the ecosystem. We are currently looking for appropriate datasets that will generalize well to mangrove environs.
+## Human Infrastructure ID
+Detecting human-made structures (roads, buildings) that threaten mangroves. Currently seeking appropriate datasets that generalize well to mangrove environments.
 
-The satellite super-resolution project (Currently Discontinued) aims to expand the capabilities of our mangrove identification models by enhancing satellite imagery to allow us to precisely track and identify mangroves anywhere on Earth without needing to deploy drones. It was discontinued because our classifiers do not function well even at the super-resolved resolution.
+**Todo:**
+- Source labeled human infrastructure vs natural features data
+- Implement overlap in tile processing
+- Consider creating labeled human infrastructure data from our mangrove imagery
+- Normalize and combine multiple data sources
 
-# Our Pipeline
+## Satellite Super-Res
+Aimed to enhance satellite imagery for global mangrove tracking without drones. Discontinued because classifiers don't function well even at super-resolved resolution.
 
-![pipline](readme_resources/Mangrove_Pipeline.jpeg)
+**Todo:**
+- Implement image space Schrödinger Bridge Diffusion
+- Edit Schrödinger Bridge Latent Diffusion model to extract features using standard resnet. The multispectral resnet feature space is incompatible with the target rgb feature space, so we need to use the same standard resnet feature extractor for both. The only issue is we need to find a way to incorporate the multispectral channels into the process.
+- Find pretrained super-res models
+- Gather a dataset
 
-## 1. Data Processing
-All of the tools related to processing geospatial data exists in the DroneClassification/data folder. Instructions for formatting data and the pipeline to process datasets are in the process_data notebook.
+## ArcGIS Toolbox
+Drop-in toolbox for ArcGIS Pro enabling environmental scientists to easily deploy and use our models for imagery classification.
 
-## 2. Model Training
-Model architecture and loss functions are in the DroneClassification/models folder. The tools used to train models exist in the training_utils folder. The pipeline to train a model is in the model_training_ground notebook.
+**Todo:**
+- Filter models by task in UI
+- Package model info into .emd files
+- Trim edge predictions with no input
+- Add overlap blending logic
+- Implement batch processing for GPU acceleration
 
-### Current Classification Models:
+## Our Pipeline
+![pipeline](readme_resources/Mangrove_Pipeline.jpeg)
 
-UNet: ResNet18 Encoder, Segmentation Decoder
+### 1. Data Processing
+Tools in `DroneClassification/data`. See `process_data` notebook for instructions.
 
-SegFormer B0/B2
+### 2. Model Training
+Architecture and loss functions in `DroneClassification/models`. Training tools in `training_utils`. See `model_training_ground` notebook for training template.
 
-### Super-Resolution Models being tested (currently on ice):
+**Current Models:**
+- ResNet18 UNet: Best for Mangrove Classification
+- SegFormer B0/B2: Best for Human Infrastructure 
 
-Schrödinger Bridge Latent Diffusion 
+**Super-Resolution (testing):**
+- Schrödinger Bridge Latent Diffusion
+- 3-layer SRCNN
 
-3-layer SRCNN
+### 3. ArcGIS Packaging
+`ARC_Package` contains the toolbox and model formatting template. Each architecture requires a ModelClass to be implemented.
 
-## 3. ArcGIS Packaging
-The ARC_Package folder contains the toolbox for ArcGIS Pro and the template for formatting a trained model for use with the toolbox. A ModelClass class must be created for each model architecture. 
+## Todo
 
+**Data:**
+- Source labeled human infrastructure vs natural features data
+- Implement overlap in tile processing
+- Consider creating labeled human infrastructure data from our mangrove imagery
+- Normalize and combine multiple data sources
 
-# Todo:
-## Data
-- Sourcing labeled human infrastructure vs natural features data
-- Add logic to handle tiles with incomplete/partial data rather than filtering them out. This would mean building labels with ignore_data values (255).
-- Implement overlap in tile processing.
-- Potentially creating our own labeled human vs natural data using our mangrove imagery.
-- Normalizing and combining multiple human vs natural data sources for robust generalization
-
-## ML
-### Testing various approaches
-- Architectures
-- data augmentations
-- loss functions
-- optimizers, etc.
-
-### Adding features to validation process
-- Fixing odd issue in human segmentation visualizer where examples repeat (see end of human_segmentation.ipynb)
-- Add option to select validation metrics in TrainingGround
-- Add f1 score
-- Nicer/better metrics plotting
-
-## ArcGIS interface
-### Frontend
-- Optimize UI to filter available models by task (Mangrove Classification / Human vs Natural Classification)
-- Abstract input image size, output channels/names, and model weights by packaging into the models
-
-### Backend
-- Trimming edges: We are including predictions where there is no input at the edges of the tif due to partial input tiles. Remove predictions in those areas.
-- Blending overlap: Currently we just take the centermost tile predictions. It might be helpful to add some kind of blending logic.
-- Batch Processing: Currently, we only process one tile at a time, but we could run multiple at once when using a GPU to accelerate the process.
-
-
-
-
-
-
-
-
+**ML:**
+- Test architectures, augmentations, loss functions, optimizers
+- Fix validation visualizer repetition issue
+- Add validation metric selection in TrainingGround
+- Add F1 score
+- Improve metrics plotting
 
