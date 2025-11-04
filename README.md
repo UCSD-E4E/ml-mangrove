@@ -15,7 +15,7 @@ Detecting human-made structures (roads, buildings) that threaten mangroves. Curr
 - Normalize and combine multiple data sources
 
 ## Satellite Super-Res
-Aimed to enhance satellite imagery for global mangrove tracking without drones. Discontinued because classifiers don't function well even at super-resolved resolution.
+Aimed to enhance satellite imagery for global mangrove tracking without drones. Discontinued because classifiers don't function well even at super-resolved resolution, but it is a useful tool to have.
 
 **Todo:**
 - Implement image space Schrödinger Bridge Diffusion
@@ -37,10 +37,10 @@ Drop-in toolbox for ArcGIS Pro enabling environmental scientists to easily deplo
 ![pipeline](readme_resources/Mangrove_Pipeline.jpeg)
 
 ### 1. Data Processing
-Tools in `DroneClassification/data`. See `process_data` notebook for instructions.
+See `DroneClassification/data/process_data` notebook for processing geospatial imagery. All tools are stored in the `utils.py` file.
 
 ### 2. Model Training
-Architecture and loss functions in `DroneClassification/models`. Training tools in `training_utils`. See `model_training_ground` notebook for training template.
+Model architectures and loss functions are in `DroneClassification/models`. See `model_training_ground` notebook for training template.
 
 **Current Models:**
 - ResNet18 UNet: Best for Mangrove Classification
@@ -52,19 +52,3 @@ Architecture and loss functions in `DroneClassification/models`. Training tools 
 
 ### 3. ArcGIS Packaging
 `ARC_Package` contains the toolbox and model formatting template. Each architecture requires a ModelClass to be implemented.
-
-## Todo
-
-**Data:**
-- Source labeled human infrastructure vs natural features data
-- Implement overlap in tile processing
-- Consider creating labeled human infrastructure data from our mangrove imagery
-- Normalize and combine multiple data sources
-
-**ML:**
-- Test architectures, augmentations, loss functions, optimizers
-- Fix validation visualizer repetition issue
-- Add validation metric selection in TrainingGround
-- Add F1 score
-- Improve metrics plotting
-
