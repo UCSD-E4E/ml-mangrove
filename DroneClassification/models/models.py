@@ -35,8 +35,10 @@ class ResNet_UNet(Module):
 
     Defaults to ResNet18 with ImageNet weights.
     """
-    def __init__(self, ResNet: Optional[ResNet] = None, input_image_size=224, num_classes=1):
+    def __init__(self, input_image_size=224, num_classes=1, ResNet: Optional[ResNet] = None):
         super(ResNet_UNet, self).__init__()
+        self.input_image_size = input_image_size
+        self.num_classes = num_classes
         if ResNet is None:
             ResNet = tv_resnet18(weights=torchvision.models.ResNet18_Weights.IMAGENET1K_V1)
         for param in ResNet.parameters():

@@ -172,9 +172,9 @@ class ResUNet(ModelClass):
             UNet architecture with ResNet encoder.
             Defaults to ResNet18 with ImageNet weights.
             """
-            def __init__(self, backbone = None, input_image_size=224, num_classes=1):
+            def __init__(self, backbone = "resnet18", input_image_size=224, num_classes=1):
                 super(ResNet_UNet, self).__init__()
-                if backbone is None:
+                if backbone == "resnet18":
                     backbone = resnet18(weights=ResNet18_Weights.IMAGENET1K_V1)
                 elif backbone == "resnet34":
                     backbone = resnet34(weights=ResNet34_Weights.IMAGENET1K_V1)
@@ -185,7 +185,7 @@ class ResUNet(ModelClass):
                 elif backbone == "resnet152":
                     backbone = resnet152(weights=ResNet152_Weights.IMAGENET1K_V1)
                 else:
-                    raise ValueError("Backbone not supported. Supported backbones are: resnet18, resnet34, resnet50, resnet101, resnet152")
+                    raise ValueError(f"Backbone not supported. Supported backbones are: resnet18, resnet34, resnet50, resnet101, resnet152.")
                 
                 for param in backbone.parameters():
                     param.requires_grad = False

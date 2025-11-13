@@ -348,19 +348,27 @@ class TrainingSession:
         )
         self.logger = logging.getLogger(self.experiment_name)
         
+        
+
+        # get model attributes
+        model_info = {'Name': str(self.model.__class__.__name__)}
+        for attr in self.model.__dict__:
+            if not attr.startswith('_') and not callable(getattr(self.model, attr)) and not isinstance(getattr(self.model, attr), nn.Module) and not attr == 'training':
+                model_info[attr] = getattr(self.model, attr)
+
         # Save configuration
         config = {
-            'model': str(self.model.__class__.__name__),
+            'Model': model_info,
             'Loss Function': str(self.lossFunc.__class__.__name__),
-            'optimizer': self.optimizer.__class__.__name__,
-            'scheduler': self.scheduler.__class__.__name__,
-            'learning_rate': self.init_lr,
-            'weight_decay': self.weight_decay,
-            'batch_size': self.batch_size,
-            'num_epochs': self.num_epochs,
-            'device': str(self.device)
+            'Optimizer': self.optimizer.__class__.__name__,
+            'Scheduler': self.scheduler.__class__.__name__,
+            'Learning Rate': self.init_lr,
+            'Weight Decay': self.weight_decay,
+            'Batch Size': self.batch_size,
+            'Number of Epochs': self.num_epochs,
+            'Device Type': str(self.device)
         }
-        
+
         with open(self.experiment_dir / 'config.json', 'w') as f:
             json.dump(config, f, indent=2)
     
@@ -426,26 +434,26 @@ class TrainingSession:
             # Multiple datasets
             avg_loss = np.mean([m['Loss'] for m in val_metrics])
             avg_metric = np.mean([m.get('Mean_IoU', m.get('IOU', 0)) for m in val_metrics])
-            
             log_msg = f"Epoch {epoch+1:3d} | Train Loss: {train_loss:.4f} | Val Loss: {avg_loss:.4f} | Avg Metric: {avg_metric:.4f}"
-            print(log_msg)
-            
+    
             if hasattr(self, 'logger'):
                 self.logger.info(log_msg)
                 for i, metrics in enumerate(val_metrics):
                     dataset_name = self.validation_dataset_names[i] if self.validation_dataset_names else f"Dataset {i+1}"
                     self.logger.info(f"  {dataset_name}: {metrics}")
+            else:
+                print(log_msg)
         else:
             # Single dataset
             val_loss = val_metrics['Loss']
             main_metric = val_metrics.get('Mean_IoU', val_metrics.get('IOU', 0))
-            
             log_msg = f"Epoch {epoch+1:3d} | Train Loss: {train_loss:.4f} | Val Loss: {val_loss:.4f} | IoU: {main_metric:.4f}"
-            print(log_msg)
             
             if hasattr(self, 'logger'):
                 self.logger.info(log_msg)
-                self.logger.info(f"  Detailed metrics: {val_metrics}")
+                self.logger.info(f"Detailed metrics: {val_metrics}")
+            else:
+                print(log_msg)
     
     def get_available_metrics(self) -> List[str]:
         """Returns a list of available metrics from the validation metrics."""

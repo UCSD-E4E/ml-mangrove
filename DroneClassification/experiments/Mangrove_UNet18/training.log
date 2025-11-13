@@ -1,0 +1,45 @@
+2025-10-27 01:12:31,029 - INFO - Starting training: 20 epochs
+2025-10-27 01:12:31,030 - INFO - Model parameters: 15,907,914
+2025-10-27 01:23:28,711 - INFO - Epoch   1 | Train Loss: 0.3067 | Val Loss: 0.2707 | IoU: 0.8209
+2025-10-27 01:23:28,712 - INFO -   Detailed metrics: {'Pixel_Accuracy': 0.8952128722554161, 'Precision': 0.9125301508676438, 'Recall': 0.8912027361279442, 'IOU': 0.8208776030086335, 'Loss': 0.27074179984274366}
+2025-10-27 01:23:29,058 - INFO - New best model saved at epoch 1
+2025-10-27 01:32:49,425 - INFO - Epoch   2 | Train Loss: 0.2690 | Val Loss: 0.2590 | IoU: 0.8267
+2025-10-27 01:32:49,425 - INFO -   Detailed metrics: {'Pixel_Accuracy': 0.8990142349969773, 'Precision': 0.9164960883912586, 'Recall': 0.8940296353612627, 'IOU': 0.826655003229777, 'Loss': 0.2590150558097022}
+2025-10-27 01:32:49,668 - INFO - New best model saved at epoch 2
+2025-10-27 01:41:59,538 - INFO - Epoch   3 | Train Loss: 0.2573 | Val Loss: 0.2488 | IoU: 0.8305
+2025-10-27 01:41:59,538 - INFO -   Detailed metrics: {'Pixel_Accuracy': 0.9019064189138867, 'Precision': 0.923368779137021, 'Recall': 0.892002602985927, 'IOU': 0.8305342875208174, 'Loss': 0.24878070309048608}
+2025-10-27 01:41:59,770 - INFO - New best model saved at epoch 3
+2025-10-27 01:51:10,418 - INFO - Epoch   4 | Train Loss: 0.2497 | Val Loss: 0.2463 | IoU: 0.8325
+2025-10-27 01:51:10,419 - INFO -   Detailed metrics: {'Pixel_Accuracy': 0.903242856888544, 'Precision': 0.9247025773638771, 'Recall': 0.8931285700343904, 'IOU': 0.8325289762587774, 'Loss': 0.246313762593837}
+2025-10-27 01:51:10,659 - INFO - New best model saved at epoch 4
+2025-10-27 02:00:27,520 - INFO - Epoch   5 | Train Loss: 0.2427 | Val Loss: 0.2422 | IoU: 0.8337
+2025-10-27 02:00:27,520 - INFO -   Detailed metrics: {'Pixel_Accuracy': 0.9040822257314409, 'Precision': 0.9271829972948347, 'Recall': 0.8921244163740248, 'IOU': 0.833678495429811, 'Loss': 0.2422433998329299}
+2025-10-27 02:00:27,751 - INFO - New best model saved at epoch 5
+2025-10-27 02:09:44,932 - INFO - Epoch   6 | Train Loss: 0.2367 | Val Loss: 0.2401 | IoU: 0.8394
+2025-10-27 02:09:44,932 - INFO -   Detailed metrics: {'Pixel_Accuracy': 0.9068265526635306, 'Precision': 0.9213578688530695, 'Recall': 0.9043272553171431, 'IOU': 0.8394196670395987, 'Loss': 0.24007548159077055}
+2025-10-27 02:09:45,164 - INFO - New best model saved at epoch 6
+2025-10-27 02:19:35,548 - INFO - Epoch   7 | Train Loss: 0.2311 | Val Loss: 0.2402 | IoU: 0.8397
+2025-10-27 02:19:35,551 - INFO -   Detailed metrics: {'Pixel_Accuracy': 0.9066401590619768, 'Precision': 0.9176308891886756, 'Recall': 0.9082255991299947, 'IOU': 0.839661081745511, 'Loss': 0.24020622206585748}
+2025-10-27 02:19:35,780 - INFO - New best model saved at epoch 7
+2025-10-27 02:29:29,222 - INFO - Epoch   8 | Train Loss: 0.2251 | Val Loss: 0.2373 | IoU: 0.8367
+2025-10-27 02:29:29,223 - INFO -   Detailed metrics: {'Pixel_Accuracy': 0.9062536787986756, 'Precision': 0.9312804293632507, 'Recall': 0.8918482719148908, 'IOU': 0.8367462362561907, 'Loss': 0.23733907976320812}
+2025-10-27 02:38:59,338 - INFO - Epoch   9 | Train Loss: 0.2201 | Val Loss: 0.2408 | IoU: 0.8415
+2025-10-27 02:38:59,339 - INFO -   Detailed metrics: {'Pixel_Accuracy': 0.9077308197248549, 'Precision': 0.9174300945372809, 'Recall': 0.9106063800766354, 'IOU': 0.8415346938087827, 'Loss': 0.24076468981447674}
+2025-10-27 02:38:59,569 - INFO - New best model saved at epoch 9
+2025-10-27 02:48:13,416 - INFO - Epoch  10 | Train Loss: 0.2153 | Val Loss: 0.2351 | IoU: 0.8415
+2025-10-27 02:48:13,417 - INFO -   Detailed metrics: {'Pixel_Accuracy': 0.9082049851190476, 'Precision': 0.9236690756252833, 'Recall': 0.9045305599485125, 'IOU': 0.8415142591794332, 'Loss': 0.23514678627252578}
+2025-10-27 02:57:17,598 - INFO - Epoch  11 | Train Loss: 0.2102 | Val Loss: 0.2392 | IoU: 0.8374
+2025-10-27 02:57:17,599 - INFO -   Detailed metrics: {'Pixel_Accuracy': 0.9064531227520534, 'Precision': 0.9299760032835461, 'Recall': 0.8937800856998989, 'IOU': 0.837366285551162, 'Loss': 0.23915320211932772}
+2025-10-27 03:08:26,789 - INFO - Epoch  12 | Train Loss: 0.2063 | Val Loss: 0.2370 | IoU: 0.8447
+2025-10-27 03:08:26,790 - INFO -   Detailed metrics: {'Pixel_Accuracy': 0.9096154394603911, 'Precision': 0.9186280763716925, 'Recall': 0.9131224704924084, 'IOU': 0.8447072303862799, 'Loss': 0.23704749981562295}
+2025-10-27 03:08:27,047 - INFO - New best model saved at epoch 12
+2025-10-27 03:19:41,881 - INFO - Epoch  13 | Train Loss: 0.2015 | Val Loss: 0.2364 | IoU: 0.8434
+2025-10-27 03:19:41,881 - INFO -   Detailed metrics: {'Pixel_Accuracy': 0.9091615382830301, 'Precision': 0.9216156489508492, 'Recall': 0.9087450537227449, 'IOU': 0.8434263178280421, 'Loss': 0.2363756741086642}
+2025-10-27 03:29:22,918 - INFO - Epoch  14 | Train Loss: 0.1979 | Val Loss: 0.2383 | IoU: 0.8422
+2025-10-27 03:29:22,920 - INFO -   Detailed metrics: {'Pixel_Accuracy': 0.9086003502209982, 'Precision': 0.9235759515989395, 'Recall': 0.9053978419303894, 'IOU': 0.8421681148665292, 'Loss': 0.23827169019551503}
+2025-10-27 03:38:59,305 - INFO - Epoch  15 | Train Loss: 0.1942 | Val Loss: 0.2389 | IoU: 0.8409
+2025-10-27 03:38:59,305 - INFO -   Detailed metrics: {'Pixel_Accuracy': 0.9077000375021071, 'Precision': 0.9214802508127121, 'Recall': 0.9059989881515503, 'IOU': 0.8409327298118955, 'Loss': 0.23894471299080622}
+2025-10-27 03:48:20,911 - INFO - Epoch  16 | Train Loss: 0.1913 | Val Loss: 0.2365 | IoU: 0.8429
+2025-10-27 03:48:20,911 - INFO -   Detailed metrics: {'Pixel_Accuracy': 0.9090916359992255, 'Precision': 0.9242669257663545, 'Recall': 0.9055229045095898, 'IOU': 0.8428859165736607, 'Loss': 0.23647376528808048}
+2025-10-27 03:53:32,105 - INFO - Starting training: 10 epochs
+2025-10-27 03:53:32,106 - INFO - Model parameters: 4,370,657
