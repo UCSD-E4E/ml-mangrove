@@ -780,6 +780,8 @@ class ValidateModel(object):
             _ = torch.load(model_file, map_location='cpu')
             arcpy.AddMessage("✓ Checkpoint loaded")
             
+            
+            
             class DummyDataset:
                 def __init__(self, img_size):
                     self.dummy_img = torch.zeros(3, img_size, img_size)
@@ -793,7 +795,13 @@ class ValidateModel(object):
             arcpy.AddMessage("\n[2/3] Initializing model architecture...")
             dummy_data = DummyData(num_classes, img_size=image_size)
             model_wrapper : ModelClass = getattr(models, self.model_configs[model_architecture]["class_name"])()
+            
+            # TODO Change
+            arcpy.AddMessage(f'Backbone: {backbone, backbone == "resnet18"}, model_wrapper: {model_wrapper}')
+            
             model = model_wrapper.get_model(dummy_data, backbone=backbone, state_dict=model_file)
+        
+            
             arcpy.AddMessage("✓ Model architecture created")
             
             arcpy.AddMessage("\n[3/3] Testing inference...")

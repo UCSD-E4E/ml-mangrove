@@ -170,6 +170,7 @@ def rasterize_shapefiles(path):
 
     for entry in os.listdir(path):
         if 'Chunk' in entry:
+            entry_num += 1
             chunk_path = os.path.join(path, entry)
             name = chunk_path.split('/')[-1]
             
@@ -189,7 +190,7 @@ def rasterize_shapefiles(path):
             if os.path.exists(output_path):
                 continue
             else:
-                print(f"Rasterizing {name} shapefile... ({entry_num+1}/{len(num_entries)})")
+                print(f"Rasterizing {name} shapefile... ({entry_num}/{len(num_entries)})")
             
             gdf = _read_all_layers(shapefile_folder)
             if gdf is None:
@@ -197,7 +198,7 @@ def rasterize_shapefiles(path):
                 continue
             
             label_column = None
-            for col in ['label', 'labels', 'class']:
+            for col in ['label', 'labels', 'class', 'value']:
                 if col in gdf.columns:
                     label_column = col
                     break

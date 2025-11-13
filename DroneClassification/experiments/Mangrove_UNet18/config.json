@@ -1,0 +1,15 @@
+{
+  "Model": {
+    "Name": "ResNet_UNet",
+    "input_image_size": 224,
+    "num_classes": 1
+  },
+  "Loss Function": "JaccardLoss",
+  "Optimizer": "AdamW",
+  "Scheduler": "CosineAnnealingLR",
+  "Learning Rate": 0.0001,
+  "Weight Decay": 0.0001,
+  "Batch Size": 32,
+  "Number of Epochs": 20,
+  "Device Type": "mps"
+}
