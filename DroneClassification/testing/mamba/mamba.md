@@ -57,14 +57,43 @@ This notebook builds and tests the complete MambaUNet architecture:
 
 ### Step 4: Train on Landcover.ai Dataset
 
-**Run: [03_train_mamba_unet.ipynb](03_train_mamba_unet.ipynb)** 
+**Run: [03_train_mamba_unet.ipynb](03_train_mamba_unet.ipynb)**
 
 This notebook trains MambaUNet on real aerial imagery and compares with ResNet_UNet:
-- Load Landcover.ai v1 dataset (41 GeoTIFFs, 512×512 tiles, 4 land cover classes)
-- Train MambaUNet with JaccardLoss (proven best loss for segmentation)
+- Load Landcover.ai v1 dataset (41 GeoTIFFs, 512×512 tiles, 5 land cover classes)
+- Train MambaUNet with weighted CrossEntropyLoss (handles class imbalance)
 - Train ResNet_UNet baseline with same data for direct comparison
-- Compare training curves, loss values, parameter counts
-- Visualize predictions side-by-side with ground truth
+- Compare training curves, loss values, parameter counts, and validation IoU
+- Automatic checkpointing and metrics logging for both models
+
+**Status**: ✓ Complete - 2 epochs trained successfully
+- **MambaUNet**: Val IoU = 0.1127 (622K params), Epoch 2 best model
+- **ResNet_UNet**: Val IoU = 0.2448 (15.9M params), Epoch 2 best model - 2.17× higher IoU
+- ResNet achieves better accuracy but MambaUNet is 25.5× smaller with faster inference
+
+---
+
+## Next Steps
+
+We have couple options to choose from:
+
+**Option 1: Improve MambaUNet Performance**
+- Extend training to 10-20 epochs to reach higher IoU
+- Experiment with different architectures (more Mamba layers, larger embeddings)
+- Fine-tune hyperparameters (learning rate, batch size, weight decay)
+- Apply data augmentation (rotations, flips, color jittering) to improve generalization
+
+**Option 2: Extended Baseline Comparison**
+- Train both models for more epochs (20-50) to convergence
+- Compare inference speed and memory usage on test set
+- Evaluate on mangrove-specific imagery to test domain transfer
+- Generate performance curves and statistical comparisons
+
+**Option 3: Human Infrastructure Detection**
+- Pivot to human-in-the-loop infrastructure detection task
+- Fine-tune existing models (MambaUNet or ResNet) on new labeled data
+- Integrate into inference pipeline for real-world deployment
+- Focus on practical accuracy and computational efficiency for edge devices
 
 **Dataset**: Landcover.ai v1
 - **Type**: Aerial land cover segmentation (similar domain to mangrove detection)
@@ -117,8 +146,9 @@ Output: (B, 1, 512, 512)
 | `mamba.md` | This file - integration overview | ✓ Updated |
 | `01_test_mamba.ipynb` | Verify mamba-ssm installation | ✓ Complete |
 | `02_build_mamba_unet.ipynb` | Build and test architecture | ✓ Complete |
-| `03_train_mamba_unet.ipynb` | Train and compare with baseline | ✓ Ready |
-| `03_TRAINING_GUIDE.md` | Detailed training guide & tips | ✓ New |
+| `03_train_mamba_unet.ipynb` | Train MambaUNet and ResNet_UNet | ✓ Complete |
+| `experiments/MambaUNet_Landcover_5class/` | MambaUNet training results | ✓ Logged |
+| `experiments/ResNet_UNet_Landcover_5class/` | ResNet_UNet training results | ✓ Logged |
 | `LANDCOVER_AI_README.md` | Dataset information & structure | ✓ Updated |
 | `docs/WSL2_SETUP_GUIDE.md` | Complete environment setup | ✓ Reference |
 | `landcover.ai.v1/` | Landcover.ai v1 dataset | 📊 Not tracked |
