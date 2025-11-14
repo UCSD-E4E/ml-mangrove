@@ -1,0 +1,11 @@
+{
+  "model": "ResNet_UNet",
+  "Loss Function": "CrossEntropyLoss",
+  "optimizer": "AdamW",
+  "scheduler": "CosineAnnealingLR",
+  "learning_rate": 0.0001,
+  "weight_decay": 0.0001,
+  "batch_size": 8,
+  "num_epochs": 2,
+  "device": "cuda"
+}
