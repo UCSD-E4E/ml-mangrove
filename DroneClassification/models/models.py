@@ -252,15 +252,15 @@ class SegFormer(Module):
             output = nn.functional.interpolate(output, size=(image.shape[2], image.shape[3]), mode="bilinear", align_corners=False)
         return output
     
-    def freeze_backbone(self):
-        for param in self.segformer.parameters():
-            param.requires_grad = False
-        for param in self.segformer.decode_head.classifier.parameters(): # type: ignore
-            param.requires_grad = True
-    
-    def train_backbone(self):
-        for param in self.segformer.parameters():
-            param.requires_grad = True
+    def train_backbone(self, train: bool = True):
+        if train:
+            for param in self.segformer.parameters():
+                param.requires_grad = True
+        else:
+            for param in self.segformer.parameters():
+                param.requires_grad = False
+            for param in self.segformer.decode_head.classifier.parameters(): # type: ignore
+                param.requires_grad = True
 
 class ResNet_FC(Module):
     """
