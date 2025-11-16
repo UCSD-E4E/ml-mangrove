@@ -1,0 +1,15 @@
+{
+  "Model": {
+    "Name": "SegFormer",
+    "num_classes": 5,
+    "input_image_size": 512
+  },
+  "Loss Function": "JaccardLoss",
+  "Optimizer": "AdamW",
+  "Scheduler": "CosineAnnealingLR",
+  "Learning Rate": 0.0001,
+  "Weight Decay": 0.0001,
+  "Batch Size": 8,
+  "Number of Epochs": 20,
+  "Device Type": "cuda"
+}
