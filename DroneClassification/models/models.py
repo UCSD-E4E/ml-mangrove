@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import numpy as np
 from torch.nn import Conv2d, Module
 import torchvision
@@ -7,7 +8,7 @@ from torchvision.models import densenet121, DenseNet121_Weights
 from torchvision.models import resnet18 as tv_resnet18
 from transformers import SegformerForSemanticSegmentation
 from torchvision.models.resnet import ResNet
-from typing import Optional
+from typing import Optional, Sequence
 
 """
 Pretrained model Weights from SSL4EO-12 dataset
@@ -225,7 +226,6 @@ class SegFormer(Module):
     - "nvidia/segformer-b2-finetuned-ade-512-512"
     - "nvidia/segformer-b3-finetuned-ade-512-512"
     - "nvidia/segformer-b4-finetuned-ade-512-512"
-    - "nvidia/segformer-b5-finetuned-ade-512-512"
     - "nvidia/segformer-b5-finetuned-ade-640-640"
 
     - "nvidia/segformer-b0-finetuned-cityscapes-512-1024"
@@ -318,6 +318,120 @@ class ResNet_FC(Module):
         x = self.classification_head(x)
         x = x.view(-1, self.num_classes, self.input_image_size, self.input_image_size)
         return x
+
+class DeepLab(Module):
+    def __init__(self, num_classes=1, input_image_size=512, backbone: str = 'resnet50'):
+        """
+        DeeplabV3 model for semantic segmentation using torchvision's implementation
+        https://arxiv.org/abs/1706.05587
+
+        Backbone options:
+        - 'resnet50'
+        - 'resnet101'
+        - 'mobilenet_v3_large'
+        - 'xception'
+        """
+        super(DeepLab, self).__init__()
+        self.num_classes = num_classes
+        self.input_image_size = input_image_size
+        self.backbone = backbone
+
+        if backbone == 'resnet50':
+            self.deeplab = torchvision.models.segmentation.deeplabv3_resnet50(weights='DEFAULT')
+        elif backbone == 'resnet101':
+            self.deeplab = torchvision.models.segmentation.deeplabv3_resnet101(weights='DEFAULT')
+        elif backbone == 'mobilenet_v3_large':
+            self.deeplab = torchvision.models.segmentation.deeplabv3_mobilenet_v3_large(weights='DEFAULT')
+        elif backbone == 'xception':
+            self.deeplab = Xception(num_classes=num_classes)
+        else: # default to resnet50
+            print(f"Backbone {backbone} not recognized, defaulting to resnet50")
+            self.deeplab = torchvision.models.segmentation.deeplabv3_resnet50(weights='DEFAULT')
+
+        test_input = torch.randn(1, 3, input_image_size, input_image_size)
+        test_output = self.deeplab.backbone(test_input) if backbone == 'xception' else self.deeplab.backbone(test_input)['out']
+
+        self.deeplab.classifier = DeepLabHead(test_output.shape[1], num_classes)
+
+    def forward(self, image):
+        if image.shape[1] > 3:
+            image = image[:, :3, :, :]
+        
+        output = self.deeplab(image)
+        
+        if self.backbone != 'xception':
+            output = output['out']
+
+        if output.shape[2] != image.shape[2] or output.shape[3] != image.shape[3]:
+            output = nn.functional.interpolate(output, size=(image.shape[2], image.shape[3]), mode="bilinear", align_corners=False)
+        return output
+
+class Xception(nn.Module):
+    """
+    Xception model from the paper "Xception: Deep Learning with Depthwise Separable Convolutions"
+    https://arxiv.org/pdf/1610.02357v3
+    
+    """
+    def __init__(
+            self,
+            num_classes: int = 1000,
+    ) -> None:
+        super(Xception, self).__init__()
+
+        self.backbone = nn.Sequential(
+            nn.Conv2d(3, 32, kernel_size=(3, 3), stride=(2, 2), padding=(0, 0), bias=False),
+            nn.BatchNorm2d(32),
+            nn.ReLU(True),
+
+            nn.Conv2d(32, 64, kernel_size=(3, 3), stride=(1, 1), padding=(0, 0), bias=False),
+            nn.BatchNorm2d(64),
+            nn.ReLU(True),
+
+            XceptionBlock(64, 128, 2, False, True, 2),
+            XceptionBlock(128, 256, 2, True, True, 2),
+            XceptionBlock(256, 728, 2, True, True, 2),
+
+            XceptionBlock(728, 728, 1, True, True, 3),
+            XceptionBlock(728, 728, 1, True, True, 3),
+            XceptionBlock(728, 728, 1, True, True, 3),
+            XceptionBlock(728, 728, 1, True, True, 3),
+
+            XceptionBlock(728, 728, 1, True, True, 3),
+            XceptionBlock(728, 728, 1, True, True, 3),
+            XceptionBlock(728, 728, 1, True, True, 3),
+            XceptionBlock(728, 728, 1, True, True, 3),
+
+            XceptionBlock(728, 1024, 2, True, False, 2),
+
+            SeparableConv2d(1024, 1536, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1)),
+            nn.BatchNorm2d(1536),
+            nn.ReLU(inplace=True),
+
+            SeparableConv2d(1536, 2048, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1)),
+            nn.BatchNorm2d(2048),
+            nn.ReLU(True))
+
+        self.classifier = nn.Sequential(
+            nn.AdaptiveAvgPool2d((1, 1)),
+            nn.Linear(2048, num_classes)
+        )
+
+        # Initialize neural network weights
+        self._initialize_weights()
+
+    def forward(self, x):
+        out = self.backbone(x)
+        out = self.classifier(out)
+        return out
+    
+    def _initialize_weights(self) -> None:
+        for module in self.modules():
+            if isinstance(module, nn.Conv2d) or isinstance(module, nn.Linear):
+                stddev = float(module.stddev) if hasattr(module, "stddev") else 0.1 # type: ignore
+                torch.nn.init.trunc_normal_(module.weight, mean=0.0, std=stddev, a=-2, b=2)
+            elif isinstance(module, nn.BatchNorm2d):
+                nn.init.constant_(module.weight, 1)
+                nn.init.constant_(module.bias, 0)
 
 r"""
   _    _          _                             
@@ -432,3 +546,146 @@ class Decoder_No_Upsample(nn.Module):
 
     def forward(self, x) -> torch.Tensor:
         return self.decoder(x)
+    
+## DeepLab
+class DeepLabHead(nn.Sequential):
+    def __init__(self, in_channels: int, num_classes: int, atrous_rates: Sequence[int] = (12, 24, 36)) -> None:
+        super().__init__(
+            ASPP(in_channels, atrous_rates),
+            nn.Conv2d(256, 256, 3, padding=1, bias=False),
+            nn.BatchNorm2d(256),
+            nn.ReLU(),
+            nn.Conv2d(256, num_classes, 1),
+        )
+
+class ASPP(nn.Module):
+    def __init__(self, in_channels: int, atrous_rates: Sequence[int], out_channels: int = 256) -> None:
+        super().__init__()
+        modules = []
+        modules.append(
+            nn.Sequential(nn.Conv2d(in_channels, out_channels, 1, bias=False), nn.BatchNorm2d(out_channels), nn.ReLU())
+        )
+
+        rates = tuple(atrous_rates)
+        for rate in rates:
+            modules.append(ASPPConv(in_channels, out_channels, rate))
+
+        modules.append(ASPPPooling(in_channels, out_channels))
+
+        self.convs = nn.ModuleList(modules)
+
+        self.project = nn.Sequential(
+            nn.Conv2d(len(self.convs) * out_channels, out_channels, 1, bias=False),
+            nn.BatchNorm2d(out_channels),
+            nn.ReLU(),
+            nn.Dropout(0.5),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        _res = []
+        for conv in self.convs:
+            _res.append(conv(x))
+        res = torch.cat(_res, dim=1)
+        return self.project(res)
+
+class ASPPConv(nn.Sequential):
+    def __init__(self, in_channels: int, out_channels: int, dilation: int) -> None:
+        modules = [
+            nn.Conv2d(in_channels, out_channels, 3, padding=dilation, dilation=dilation, bias=False),
+            nn.BatchNorm2d(out_channels),
+            nn.ReLU(),
+        ]
+        super().__init__(*modules)
+
+
+class ASPPPooling(nn.Sequential):
+    def __init__(self, in_channels: int, out_channels: int) -> None:
+        super().__init__(
+            nn.AdaptiveAvgPool2d(1),
+            nn.Conv2d(in_channels, out_channels, 1, bias=False),
+            nn.BatchNorm2d(out_channels),
+            nn.ReLU(),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        size = x.shape[-2:]
+        for mod in self:
+            x = mod(x)
+        return F.interpolate(x, size=size, mode="bilinear", align_corners=False)
+
+#Xception blocks
+class SeparableConv2d(nn.Module):
+    def __init__(
+            self,
+            in_channels: int,
+            out_channels: int,
+            **kwargs
+    ) -> None:
+        super(SeparableConv2d, self).__init__()
+        self.conv1 = nn.Conv2d(in_channels, in_channels, groups=in_channels, bias=False, **kwargs)
+        self.pointwise = nn.Conv2d(in_channels, out_channels, kernel_size=(1, 1), stride=(1, 1), padding=(0, 0),
+                                   bias=False)
+    def forward(self, x):
+        out = self.conv1(x)
+        out = self.pointwise(out)
+
+        return out
+    
+class XceptionBlock(nn.Module):
+    def __init__(
+            self,
+            in_channels: int,
+            out_channels: int,
+            stride: int,
+            relu_first: bool,
+            grow_first: bool,
+            repeat_times: int,
+    ) -> None:
+        super(XceptionBlock, self).__init__()
+        rep = []
+
+        if in_channels != out_channels or stride != 1:
+            self.skip = nn.Conv2d(in_channels, out_channels, kernel_size=(1, 1), stride=(stride, stride),
+                                  padding=(0, 0), bias=False)
+            self.skipbn = nn.BatchNorm2d(out_channels)
+        else:
+            self.skip = None
+
+        mid_channels = in_channels
+        if grow_first:
+            rep.append(nn.ReLU(True))
+            rep.append(SeparableConv2d(in_channels, out_channels, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1)))
+            rep.append(nn.BatchNorm2d(out_channels))
+            mid_channels = out_channels
+
+        for _ in range(repeat_times - 1):
+            rep.append(nn.ReLU(True))
+            rep.append(SeparableConv2d(mid_channels, mid_channels, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1)))
+            rep.append(nn.BatchNorm2d(mid_channels))
+
+        if not grow_first:
+            rep.append(nn.ReLU(True))
+            rep.append(SeparableConv2d(in_channels, out_channels, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1)))
+            rep.append(nn.BatchNorm2d(out_channels))
+
+        if not relu_first:
+            rep = rep[1:]
+        else:
+            rep[0] = nn.ReLU(False)
+
+        if stride != 1:
+            rep.append(nn.MaxPool2d((3, 3), (stride, stride), (1, 1)))
+
+        self.rep = nn.Sequential(*rep)
+
+    def forward(self, x):
+        if self.skip is not None:
+            identity = self.skip(x)
+            identity = self.skipbn(identity)
+        else:
+            identity = x
+
+        out = self.rep(x)
+        out = torch.add(out, identity)
+
+        return out
