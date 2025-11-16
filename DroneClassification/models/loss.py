@@ -64,6 +64,8 @@ class JaccardLoss(nn.Module):
         Returns:
             Combined loss: alpha * CE + (1 - alpha) * Jaccard
         """
+        logits = logits.float()
+        labels = labels.long()
         # Ensure labels are [B, H, W]
         if labels.dim() == 4 and labels.shape[1] == 1:
             labels = labels.squeeze(1)
