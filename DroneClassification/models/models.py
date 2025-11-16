@@ -115,6 +115,16 @@ class ResNet_UNet(Module):
 
         return x
 
+    def freeze_backbone(self, true_or_false: bool = True):
+        for param in self.layer1.parameters():
+            param.requires_grad = not true_or_false
+        for param in self.layer2.parameters():
+            param.requires_grad = not true_or_false
+        for param in self.layer3.parameters():
+            param.requires_grad = not true_or_false
+        for param in self.layer4.parameters():
+            param.requires_grad = not true_or_false
+
 class DenseNet_UNet(Module):
     """
     - https://pytorch.org/vision/main/models/generated/torchvision.models.densenet121.html#torchvision.models.densenet121
@@ -207,16 +217,33 @@ class DenseNet_UNet(Module):
 
 class SegFormer(Module):
     """
-    SegFormer model for semantic segmentation.
-    Uses a pretrained SegFormer backbone and replaces the decode head to upsample to the input image size.
-    
-    https://github.com/NVlabs/SegFormer
+    SegFormer model for semantic segmentation from https://github.com/NVlabs/SegFormer.
+
+    Available pretrained weights:
+    - "nvidia/segformer-b0-finetuned-ade-512-512"
+    - "nvidia/segformer-b1-finetuned-ade-512-512"
+    - "nvidia/segformer-b2-finetuned-ade-512-512"
+    - "nvidia/segformer-b3-finetuned-ade-512-512"
+    - "nvidia/segformer-b4-finetuned-ade-512-512"
+    - "nvidia/segformer-b5-finetuned-ade-512-512"
+    - "nvidia/segformer-b5-finetuned-ade-640-640"
+
+    - "nvidia/segformer-b0-finetuned-cityscapes-512-1024"
+    - "nvidia/segformer-b0-finetuned-cityscapes-640-1280"
+    - "nvidia/segformer-b0-finetuned-cityscapes-768-768"
+    - "nvidia/segformer-b0-finetuned-cityscapes-1024-1024"
+    - "nvidia/segformer-b1-finetuned-cityscapes-1024-1024"
+    - "nvidia/segformer-b2-finetuned-cityscapes-1024-1024"
+    - "nvidia/segformer-b3-finetuned-cityscapes-1024-1024"
+    - "nvidia/segformer-b4-finetuned-cityscapes-1024-1024"
+    - "nvidia/segformer-b5-finetuned-cityscapes-1024-1024"
     
     """
     def __init__(self, num_classes=1, input_image_size=128, weights="nvidia/segformer-b2-finetuned-ade-512-512"):
         super(SegFormer, self).__init__()
         self.num_classes = num_classes
         self.input_image_size = input_image_size
+        self.weights = weights
 
         self.segformer = SegformerForSemanticSegmentation.from_pretrained(
             weights,
