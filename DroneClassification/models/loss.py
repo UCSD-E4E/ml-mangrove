@@ -7,7 +7,8 @@ from .utils import *
 from torchvision import transforms
 from functools import partial
 from operator import itemgetter
-    
+
+
 class JaccardLoss(nn.Module):
     """
     Jaccard Loss (IoU Loss) for segmentation
@@ -58,6 +59,8 @@ class JaccardLoss(nn.Module):
         """
         logits = logits.float()
         labels = labels.long()
+
+        num_classes = logits.shape[1]
         # Ensure labels are [B, H, W]
         if labels.dim() == 4 and labels.shape[1] == 1:
             labels = labels.squeeze(1)
@@ -66,7 +69,7 @@ class JaccardLoss(nn.Module):
         valid_mask = (labels != self.ignore_index)
         
         # --- Cross-Entropy / BCE Loss ---
-        if self.num_classes > 1:
+        if num_classes > 1:
             ce_loss = self.ce(logits, labels)
             ce_loss = (ce_loss * valid_mask).sum() / (valid_mask.sum() + self.smooth)
         else:
@@ -74,7 +77,7 @@ class JaccardLoss(nn.Module):
             ce_loss = (ce_loss * valid_mask).sum() / (valid_mask.sum() + self.smooth)
         
         # --- Jaccard (IoU) Loss ---
-        if self.num_classes == 1:
+        if num_classes == 1:
             # Binary segmentation
             probs = torch.sigmoid(logits.squeeze(1))
             
@@ -119,6 +122,93 @@ class JaccardLoss(nn.Module):
         total_loss = self.alpha * ce_loss + (1 - self.alpha) * jaccard_loss
         
         return total_loss
+
+class DiceLoss(nn.Module):
+    def __init__(self, num_classes=1, weights=None, smooth=1e-5, ignore_index=255):
+        super(DiceLoss, self).__init__()
+        self.smooth = smooth
+        self.num_classes = num_classes
+        self.ignore_index = ignore_index
+
+        if num_classes == 1:
+            if weights is not None and weights.shape[0] == 2:
+                weights = weights[1].float()
+            self.ce = nn.BCEWithLogitsLoss(pos_weight=weights) if weights is not None else nn.BCEWithLogitsLoss()
+        else:
+            self.ce = nn.CrossEntropyLoss(weight=weights, ignore_index=ignore_index)
+
+    def forward(self, logits, labels):
+        logits = logits.float()
+        labels = labels.long()
+
+        if labels.dim() == 4 and labels.shape[1] == 1:
+            labels = labels.squeeze(1)
+
+        num_classes = logits.shape[1]
+        
+        # CE Loss - let PyTorch handle ignore_index
+        if num_classes > 1:
+            ce_loss = self.ce(logits, labels)
+        else:
+            valid_mask = (labels != self.ignore_index)
+            ce_loss = self.ce(logits.squeeze(1), labels.float())
+            ce_loss = (ce_loss * valid_mask).sum() / (valid_mask.sum() + self.smooth)
+        
+        # Dice Loss - mask out ignore_index
+        valid_mask = (labels != self.ignore_index)
+        
+        if num_classes > 1:
+            dice_loss = 0
+            for i in range(num_classes):
+                probs = torch.sigmoid(logits[:, i, :, :])
+                target = ((labels == i) & valid_mask).float()
+                probs_flat = probs.reshape(-1)
+                target_flat = target.reshape(-1)
+                intersection = (probs_flat * target_flat).sum()
+                dice = (2. * intersection + self.smooth) / (probs_flat.sum() + target_flat.sum() + self.smooth)
+                dice_loss += (1 - dice)
+        else:
+            probs = torch.sigmoid(logits.squeeze(1))
+            target = (labels * valid_mask).float()
+            intersection = (probs * target).sum()
+            dice = (2. * intersection + self.smooth) / (probs.sum() + target.sum() + self.smooth)
+            dice_loss = 1 - dice
+
+        return 0.5 * dice_loss + 0.5 * ce_loss
+    
+class DiceJaccardLoss(nn.Module):
+    def __init__(self, num_classes=1, weights=None, smooth=1e-5, ignore_index=255):
+        super(DiceJaccardLoss, self).__init__()
+        self.jaccard_loss = JaccardLoss(num_classes=num_classes, ignore_index=ignore_index, weight=weights, smooth=smooth, alpha=0.6)
+
+    def forward(self, logits, labels):
+        logits = logits.float()
+        labels = labels.long()
+
+        if labels.dim() == 4 and labels.shape[1] == 1:
+            labels = labels.squeeze(1)
+        valid_mask = (labels != self.ignore_index)
+        num_classes = logits.shape[1]
+        
+        if num_classes > 1:
+            dice_loss = 0
+            for i in range(num_classes):
+                probs = torch.sigmoid(logits[:, i, :, :])
+                target = ((labels == i) & valid_mask).float()
+                probs_flat = probs.reshape(-1)
+                target_flat = target.reshape(-1)
+                intersection = (probs_flat * target_flat).sum()
+                dice = (2. * intersection + self.smooth) / (probs_flat.sum() + target_flat.sum() + self.smooth)
+                dice_loss += (1 - dice)
+        else:
+            probs = torch.sigmoid(logits.squeeze(1))
+            target = (labels * valid_mask).float()
+            intersection = (probs * target).sum()
+            dice = (2. * intersection + self.smooth) / (probs.sum() + target.sum() + self.smooth)
+            dice_loss = 1 - dice
+        
+        jaccard = self.jaccard_loss(logits, labels)
+        return 0.3 * dice_loss + 0.7 * jaccard
 
 class ActiveBoundaryLoss(nn.Module):
     """
