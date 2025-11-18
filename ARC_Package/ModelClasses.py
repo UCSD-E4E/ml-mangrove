@@ -8,7 +8,7 @@ from transformers import SegformerForSemanticSegmentation
 from torchvision.models import ResNet18_Weights, resnet18, resnet34, ResNet34_Weights, ResNet50_Weights, resnet50, resnet101, ResNet101_Weights, ResNet152_Weights, resnet152
 # Based on https://developers.arcgis.com/python/latest/guide/add-model-using-model-extension/
 
-__all__ = ['ModelClass', 'SegFormer', 'ResUNet']
+__all__ = ['ModelClass', 'SegFormer', 'ResNetUNet']
 
 class ModelClass(ABC):
     def __init__(self, state_dict=None, weights=None):
