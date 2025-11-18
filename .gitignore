@@ -10,5 +10,4 @@ __pycache__/
 *.cpython-310.pyc
 */__pycache__
 .venv/
-*.pth
 .vscode/settings.json
