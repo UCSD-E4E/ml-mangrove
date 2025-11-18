@@ -116,15 +116,15 @@ class ResNet_UNet(Module):
 
         return x
 
-    def freeze_backbone(self, true_or_false: bool = True):
+    def train_backbone(self, true_or_false: bool = True):
         for param in self.layer1.parameters():
-            param.requires_grad = not true_or_false
+            param.requires_grad = true_or_false
         for param in self.layer2.parameters():
-            param.requires_grad = not true_or_false
+            param.requires_grad = true_or_false
         for param in self.layer3.parameters():
-            param.requires_grad = not true_or_false
+            param.requires_grad = true_or_false
         for param in self.layer4.parameters():
-            param.requires_grad = not true_or_false
+            param.requires_grad = true_or_false
 
 class DenseNet_UNet(Module):
     """
@@ -251,7 +251,7 @@ class SegFormer(nn.Module):
 
         # --- create a decode_head from config and reuse its components ---
         hf_decode_head = SegformerDecodeHead(config)
-        hf_decode_head.classifier = nn.Identity()
+        hf_decode_head.classifier = nn.Identity() # type: ignore
         self.decode_core = SegformerDecodeCore(hf_decode_head)
 
         # --- classifier head ---
@@ -285,31 +285,19 @@ class SegFormer(nn.Module):
                 return [lh]
         raise RuntimeError("Couldn't extract backbone hidden states. Inspect `outputs` returned by SegformerModel.")
 
-    def forward(self, image, debug=False):
+    def forward(self, image):
         # enforce 3-channel
         if image.shape[1] > 3:
             image = image[:, :3, :, :]
 
-        # get stage features
         features = self._get_backbone_features(image)
-        if debug:
-            print("backbone features:", [f.shape for f in features], [f.is_contiguous() for f in features])
-
-        # decode core: project, fuse
-        core = self.decode_core(features, debug=debug)  # (B, hidden_size, H/4, W/4)
-        if debug:
-            print("core shape, contig:", core.shape, core.is_contiguous())
-
-        # classifier head
+        core = self.decode_core(features)  # (B, hidden_size, H/4, W/4)
         out = self.classifier(core)
-        if debug:
-            print("classifier out:", out.shape, out.is_contiguous())
 
         # upsample to input size
         if out.shape[-2:] != image.shape[-2:]:
             out = F.interpolate(out, size=image.shape[-2:], mode="bilinear", align_corners=False)
         return out
-
 
 
 class ResNet_FC(Module):
@@ -379,7 +367,9 @@ class DeepLab(Module):
             hidden_channels = self.deeplab.hidden_size
         else: # default to resnet50
             print(f"Backbone {backbone} not recognized, defaulting to resnet50")
+            self.backbone = 'resnet50'
             self.deeplab = torchvision.models.segmentation.deeplabv3_resnet50(weights='DEFAULT')
+            hidden_channels = self.deeplab.backbone(test_input)['out'].shape[1]
             
         self.deeplab.classifier = DeepLabHead(hidden_channels, num_classes)
 
@@ -389,7 +379,7 @@ class DeepLab(Module):
         
         output = self.deeplab(image)
         
-        if self.backbone not in ['segformer', 'xception']:
+        if self.backbone in ['resnet50', 'resnet101', 'mobilenet_v3_large']:
             output = output['out']
 
         if output.shape[2] != image.shape[2] or output.shape[3] != image.shape[3]:
@@ -440,10 +430,16 @@ class Xception(nn.Module):
             SeparableConv2d(1536, 2048, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1)),
             nn.BatchNorm2d(2048),
             nn.ReLU(True))
-
+        
+        self.hidden_size = 2048
         self.classifier = nn.Sequential(
-            nn.AdaptiveAvgPool2d((1, 1)),
-            nn.Linear(2048, num_classes)
+            nn.ConvTranspose2d(self.hidden_size, self.hidden_size // 2, kernel_size=4, stride=2, padding=1), 
+            nn.BatchNorm2d(self.hidden_size // 2),
+            nn.ReLU(inplace=True),
+            nn.ConvTranspose2d(self.hidden_size // 2, self.hidden_size // 4, kernel_size=4, stride=2, padding=1),
+            nn.BatchNorm2d(self.hidden_size // 4),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(self.hidden_size // 4, num_classes, kernel_size=3, padding=1),
         )
 
         # Initialize neural network weights
