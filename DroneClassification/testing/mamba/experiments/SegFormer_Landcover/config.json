@@ -2,7 +2,9 @@
   "Model": {
     "Name": "SegFormer",
     "num_classes": 5,
-    "input_image_size": 512
+    "input_image_size": 512,
+    "weights": "nvidia/segformer-b2-finetuned-ade-512-512",
+    "hidden_size": 768
   },
   "Loss Function": "JaccardLoss",
   "Optimizer": "AdamW",
