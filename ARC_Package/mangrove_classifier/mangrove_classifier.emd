@@ -1,7 +1,6 @@
 {
   "Framework": "PyTorch",
-  "ModelConfiguration": "ResUNet",
-  "ModelClass": "ResNet_UNet",
+  "ModelConfiguration": "ResNetUNet",
   "ModelFile": "resnet18_unet_mvp.pth",
   "Classes": [
     {"Value": 0, "Name": "No Mangrove"},

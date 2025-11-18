@@ -87,7 +87,7 @@ class ModelClass(ABC):
         """
         pass
 
-class ResUNet(ModelClass):
+class ResNetUNet(ModelClass):
     def __init__(self, state_dict=None, weights=None):
         """
         Custom Model class to define the model architecture, loss function and input transformations.
