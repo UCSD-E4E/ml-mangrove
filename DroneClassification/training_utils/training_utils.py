@@ -83,7 +83,8 @@ class TrainingSession:
                  save_checkpoints: bool = True,
                  threshold: float = 0.5,
                  ignore_index: int = 255,
-                 validation_dataset_names: Optional[List[str]] = None):
+                 validation_dataset_names: Optional[List[str]] = None,
+                 metric_mode: str = "segmentation"):
         
         self.trainLoader = trainLoader
         self.testLoader = testLoader
@@ -107,6 +108,12 @@ class TrainingSession:
         self.batch_size = trainLoader.batch_size if trainLoader.batch_size is not None else 1
         self.training_loss = []
         self.metrics = []
+
+        self.metric_mode = metric_mode
+        self._metric_registry = {
+            "segmentation": self._calculate_segmentation_metrics,  # default
+            "none": self._calculate_noop_metrics,                  # loss only
+        }
  
         # Multiple test loaders handling
         if isinstance(testLoader, list) and len(testLoader) > 1:
@@ -129,6 +136,34 @@ class TrainingSession:
             self.experiment_dir.mkdir(parents=True, exist_ok=True)
             self._setup_logging()
 
+
+        def _calculate_noop_metrics(self, *args, **kwargs) -> dict:
+        """Used when metric_mode='none' – returns no extra metrics (only Loss)."""
+        return {}
+
+    def _get_metric_fn(self) -> Callable:
+        """Return the metric function corresponding to the current metric_mode."""
+        metric_fn = self._metric_registry.get(self.metric_mode)
+        if metric_fn is None:
+            raise ValueError(
+                f"Unknown metric_mode '{self.metric_mode}'. "
+                f"Available modes: {list(self._metric_registry.keys())}"
+            )
+        return metric_fn
+
+    def _calculate_metrics(self, *args, **kwargs) -> dict:
+        """Main entry point for metrics inside evaluate()."""
+        metric_fn = self._get_metric_fn()
+        return metric_fn(*args, **kwargs)
+
+    def register_metric_fn(self, name: str, fn: Callable) -> None:
+        """
+        Register a custom metric function that can be selected
+        via metric_mode=name.
+        """
+        if not callable(fn):
+            raise TypeError("Metric function must be callable.")
+        self._metric_registry[name] = fn
 
     def learn(self):
         """ Training with logging and checkpointing
@@ -234,7 +269,7 @@ class TrainingSession:
             loss = self.lossFunc(pred, y)
             total_loss += loss.item()
 
-            metrics = self._calculate_segmentation_metrics(pred, y)
+            metrics = self._calculate_metrics(pred, y)
             
             for key, value in metrics.items():
                 if key in all_metrics:
