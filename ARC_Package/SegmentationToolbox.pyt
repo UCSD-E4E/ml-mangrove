@@ -185,6 +185,24 @@ class Classify(object):
         params[10].value = 255
         params[10].category = "Output Configuration"
         
+        # CHANGED 
+        # TEST OPTION A
+        params.append(arcpy.Parameter(
+            displayName="TEST A (folder)",
+            name="test_a",
+            datatype="DEFolder",
+            parameterType="Optional",
+            direction="Input"))
+        
+        # TEST OPTION B 
+        params.append(arcpy.Parameter(
+            displayName="TEST B (.pth)",
+            name="test_b",
+            datatype="DEFile",
+            parameterType="Optional",
+            direction="Input"))
+        params[12].filter.list = ['pth', 'pt']
+        
         return params
 
     def isLicensed(self):
@@ -781,7 +799,6 @@ class ValidateModel(object):
             arcpy.AddMessage("✓ Checkpoint loaded")
             
             
-            
             class DummyDataset:
                 def __init__(self, img_size):
                     self.dummy_img = torch.zeros(3, img_size, img_size)
@@ -792,11 +809,11 @@ class ValidateModel(object):
                     self.classes = [f"Class{i}" for i in range(n_classes)]
                     self.train_ds = DummyDataset(img_size)
 
+
             arcpy.AddMessage("\n[2/3] Initializing model architecture...")
             dummy_data = DummyData(num_classes, img_size=image_size)
             model_wrapper : ModelClass = getattr(models, self.model_configs[model_architecture]["class_name"])()
             
-            # TODO Change
             arcpy.AddMessage(f'Backbone: {backbone, backbone == "resnet18"}, model_wrapper: {model_wrapper}')
             
             model = model_wrapper.get_model(dummy_data, backbone=backbone, state_dict=model_file)
