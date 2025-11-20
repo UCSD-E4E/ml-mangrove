@@ -4,7 +4,7 @@
 
 Transform your trained models into user-friendly point-and-click tools that integrate seamlessly with ArcGIS Pro's Geoprocessing framework.
 
-## 🎯 Quick Start
+## How To Start
 
 ### 1. Install Dependencies
 
@@ -54,7 +54,7 @@ conda list gdal
 3. Double-click **Classify Raster with SegFormer**
 4. Fill in parameters and run!
 
-## 📦 Package Contents
+## Package Contents
 
 ```
 Segmentation-Toolbox/
@@ -70,7 +70,7 @@ Segmentation-Toolbox/
 └── SegFormer.pth/                   # Your pretrained model weights
 ```
 
-## 🛠️ Tools Included
+## Tools Included
 
 ### 1️⃣ Classify Raster with SegFormer
 Main tool for semantic segmentation of imagery
@@ -100,7 +100,7 @@ params[4].value = 64   # Default overlap
 params[5].value = 4    # Default batch size
 ```
 
-## 🐛 Troubleshooting
+## Troubleshooting
 
 ### Import Errors
 
@@ -138,15 +138,15 @@ pip install transformers
 - Increase tile overlap (try 128 or 256)
 - Apply majority filter in post-processing
 
-## 📚 Documentation
+## Documentation
 
 - **Tool help** - Click (?) in ArcGIS Pro tool dialog
 - **SegFormer paper** - https://arxiv.org/abs/2105.15203
 
-## 🔄 Updates
+## Updates
 
 ### Version 1.0 (Current)
-- ✅ raster classification
+- ✅ Raster classification
 - ✅ Batch processing
 - ✅ Model validation tools
 - ✅ GPU acceleration
