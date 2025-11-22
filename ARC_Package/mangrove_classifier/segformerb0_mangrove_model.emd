@@ -1,0 +1,14 @@
+{
+  "Framework": "PyTorch",
+  "ModelConfiguration": "SegFormer",
+  "ModelBackbone": "nvidia/segformer-b0-finetuned-ade-512-512"
+  "ModelFile": "SegFormerB0_mangrove_model.pth",
+  "Classes": [
+    {"Value": 0, "Name": "No Mangrove"},
+    {"Value": 1, "Name": "Mangrove"},
+  ],
+  "ImageHeight": 512,
+  "ImageWidth": 512,
+  "ExtractBands": [1, 2, 3],
+  "InferenceFunction": "SegFormer.forward"
+}
