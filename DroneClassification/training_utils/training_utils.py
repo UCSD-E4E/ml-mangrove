@@ -137,7 +137,7 @@ class TrainingSession:
             self._setup_logging()
 
 
-        def _calculate_noop_metrics(self, *args, **kwargs) -> dict:
+    def _calculate_noop_metrics(self, *args, **kwargs) -> dict:
         """Used when metric_mode='none' – returns no extra metrics (only Loss)."""
         return {}
 

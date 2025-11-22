@@ -331,7 +331,7 @@ class ResNet_FC(Module):
         return x
 
 class DeepLab(Module):
-    def __init__(self, num_classes=1, input_image_size=512, backbone: str = 'resnet50'):
+    def __init__(self, num_classes=1, input_image_size=512, backbone: str = 'resnet50', output_stride=4):
         """
         DeeplabV3 model for semantic segmentation using torchvision's implementation
         https://arxiv.org/abs/1706.05587
@@ -344,6 +344,7 @@ class DeepLab(Module):
         - 'segformer'
         """
         super(DeepLab, self).__init__()
+        self.output_stride = output_stride
         self.num_classes = num_classes
         self.input_image_size = input_image_size
         self.backbone = backbone
@@ -351,7 +352,13 @@ class DeepLab(Module):
         test_input = torch.randn(1, 3, input_image_size, input_image_size)
 
         if backbone == 'resnet50':
-            self.deeplab = torchvision.models.segmentation.deeplabv3_resnet50(weights='DEFAULT')
+            # Configure output stride
+            replace_stride_dilation = [False, False, False]
+            if output_stride == 8:
+                replace_stride_dilation = [False, True, True]
+            elif output_stride == 4:
+                replace_stride_dilation = [False, True, True]  # OS=4 requires dilation on layer3 AND layer4
+            self.deeplab = torchvision.models.segmentation.deeplabv3_resnet50(weights='DEFAULT', replace_stride_with_dilation=replace_stride_dilation)
             hidden_channels = self.deeplab.backbone(test_input)['out'].shape[1]
         elif backbone == 'resnet101':
             self.deeplab = torchvision.models.segmentation.deeplabv3_resnet101(weights='DEFAULT')
