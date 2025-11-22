@@ -11,3 +11,4 @@ __pycache__/
 */__pycache__
 .venv/
 .vscode/settings.json
+DroneClassification/testing/mamba/landcover.ai.v1/*
