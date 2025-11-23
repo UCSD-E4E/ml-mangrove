@@ -98,6 +98,8 @@ class ResNetUNet(ModelClass):
         super().__init__(state_dict=state_dict, weights=weights)
         self.name = "ResUNet"
         self.description = "UNet model for pixel classification"
+        self.mean = torch.tensor([0.485, 0.456, 0.406]).view(1,3,1,1)
+        self.std = torch.tensor([0.229, 0.224, 0.225]).view(1,3,1,1)
 
     def on_batch_begin(self, learn, model_input_batch: torch.Tensor, model_target_batch: torch.Tensor):
         """
@@ -111,26 +113,16 @@ class ResNetUNet(ModelClass):
         return model_input_batch, model_target_batch
 
     def transform_input(self, xb: torch.Tensor) -> torch.Tensor:
-        """
-        Function to transform the inputs for inferencing.
-        Args:
-            xb: fastai transformed batch of input images: tensor of shape [N, C, H, W],
-             where N - batch size C - number of channels (bands) in the image H - height of the image W - width of the image
-        """
-        if len(xb.shape) == 3:
+        # Ensure 4D
+        if xb.ndim == 3:
             xb = xb.unsqueeze(0)
-        xb = xb[:, :3, :, :]
 
-        # Normalize using ImageNet stats
-        max_val = xb.max()
-        if max_val > 1.0:
-            if max_val <= 255.0:
-                xb = xb / 255.0
-            else:  # Unknown range - normalize by max value
-                xb = xb / max_val
-        mean = torch.tensor([0.485, 0.456, 0.406], device=xb.device, dtype=torch.float32).view(1, 3, 1, 1)
-        std = torch.tensor([0.229, 0.224, 0.225], device=xb.device, dtype=torch.float32).view(1, 3, 1, 1)
-        return (xb - mean) / std
+        xb = xb[:, :3].float()
+        if xb.max() > 1.5:
+            xb = xb / 255.0
+        xb = xb.clamp(0.0, 1.0)
+
+        return (xb - self.mean.to(xb.device)) / self.std.to(xb.device)
 
     def transform_input_multispectral(self, xb: torch.Tensor) -> torch.Tensor:
         """
@@ -141,18 +133,12 @@ class ResNetUNet(ModelClass):
         """
         if len(xb.shape) == 3:
             xb = xb.unsqueeze(0)
-        xb = xb[:, :3, :, :]
 
         # Normalize using ImageNet stats
-        max_val = xb.max()
-        if max_val > 1.0:
-            if max_val <= 255.0:
-                xb = xb / 255.0
-            else:  # Unknown range - normalize by max value
-                xb = xb / max_val
-        mean = torch.tensor([0.485, 0.456, 0.406], device=xb.device, dtype=torch.float32).view(1, 3, 1, 1)
-        std = torch.tensor([0.229, 0.224, 0.225], device=xb.device, dtype=torch.float32).view(1, 3, 1, 1)
-        return (xb - mean) / std
+        if xb.max() > 1.5:
+            xb = xb / 255.0
+        
+        return (xb - self.mean.to(xb.device)) / self.std.to(xb.device)
 
     def get_model(self, data, backbone="resnet18", **kwargs):
         """
@@ -172,7 +158,7 @@ class ResNetUNet(ModelClass):
             UNet architecture with ResNet encoder.
             Defaults to ResNet18 with ImageNet weights.
             """
-            def __init__(self, backbone = "resnet18", input_image_size=224, num_classes=1):
+            def __init__(self, backbone = "resnet18", input_image_size=512, num_classes=1):
                 super(ResNet_UNet, self).__init__()
                 if backbone == "resnet18":
                     backbone = resnet18(weights=ResNet18_Weights.IMAGENET1K_V1)
@@ -322,20 +308,31 @@ class ResNetUNet(ModelClass):
         return F.cross_entropy(logits, targets, ignore_index=255)
 
 
-    def post_process(self, pred: torch.Tensor, thres: float) -> torch.Tensor:
+    def post_process(self, pred: torch.Tensor, thres: float = 0.5) -> torch.Tensor:
         """
-        Function to post process the output of the model in validation/infrencing mode.
-        Args:
-            pred: Raw output of the model for a batch of images
-            thres: Confidence threshold to be used to filter the predictions
-            post_processed_pred: tensor of shape [N, 1, H, W] or a List/Tuple of N tensors of shape [1, H, W], where N - batch size H - height of the image W - width of the image
+        Post-process raw model outputs for binary or multi-class segmentation.
+        Always returns [N, H, W] label masks.
         """
-        if pred.shape[1] == 1:
-            # Binary segmentation → threshold
-            return (torch.sigmoid(pred) > thres).long().squeeze(1)
-        else:
-            # Multi-class segmentation → argmax
-            return torch.argmax(pred, dim=1, keepdim=True)
+        pred = pred.detach()
+
+        # Ensure 4D shape: [N, C, H, W]
+        if pred.ndim == 2:           # [H, W]
+            pred = pred.unsqueeze(0).unsqueeze(0)
+        elif pred.ndim == 3:         # could be [N, H, W] or [1, H, W]
+            if pred.shape[0] > 1:    # [N, H, W]
+                pred = pred.unsqueeze(1)  # -> [N, 1, H, W]
+            else:
+                pred = pred.unsqueeze(0)  # -> [1, 1, H, W]
+
+        # Apply output processing
+        N, C, H, W = pred.shape
+        if C == 1: # Binary segmentation
+            prob = torch.sigmoid(pred)
+            mask = (prob > thres).long()
+            return mask.squeeze(1)      # -> [N, H, W]
+        else: # Multi-class segmentation
+            return torch.argmax(pred, dim=1)  # -> [N, H, W]
+
 
 class SegFormer(ModelClass):
     def __init__(self, state_dict=None, weights=None):
@@ -348,6 +345,8 @@ class SegFormer(ModelClass):
         super().__init__(state_dict=state_dict, weights=weights)
         self.name = "Segformer"
         self.description = "Segformer model for pixel classification"
+        self.mean = torch.tensor([0.485, 0.456, 0.406]).view(1,3,1,1)
+        self.std = torch.tensor([0.229, 0.224, 0.225]).view(1,3,1,1)
     
     def on_batch_begin(self, learn, model_input_batch: torch.Tensor, model_target_batch: torch.Tensor):
         """
@@ -361,26 +360,17 @@ class SegFormer(ModelClass):
         return model_input_batch, model_target_batch
 
     def transform_input(self, xb: torch.Tensor) -> torch.Tensor:
-        """
-        Function to transform the inputs for inferencing.
-        Args:
-            xb: fastai transformed batch of input images: tensor of shape [N, C, H, W],
-             where N - batch size C - number of channels (bands) in the image H - height of the image W - width of the image
-        """
-        if len(xb.shape) == 3:
+        # Ensure 4D
+        if xb.ndim == 3:
             xb = xb.unsqueeze(0)
-        xb = xb[:, :3, :, :]
 
-        # Normalize using ImageNet stats
-        max_val = xb.max()
-        if max_val > 1.0:
-            if max_val <= 255.0:
-                xb = xb / 255.0
-            else:  # Unknown range - normalize by max value
-                xb = xb / max_val
-        mean = torch.tensor([0.485, 0.456, 0.406], device=xb.device, dtype=torch.float32).view(1, 3, 1, 1)
-        std = torch.tensor([0.229, 0.224, 0.225], device=xb.device, dtype=torch.float32).view(1, 3, 1, 1)
-        return (xb - mean) / std
+        xb = xb.float()
+        xb = xb[:, :3]
+        if xb.max() > 1.5:
+            xb = xb / 255.0
+        xb = xb.clamp(0.0, 1.0)
+
+        return (xb - self.mean.to(xb.device)) / self.std.to(xb.device)
 
     def transform_input_multispectral(self, xb: torch.Tensor) -> torch.Tensor:
         """
@@ -395,14 +385,10 @@ class SegFormer(ModelClass):
 
         # Normalize using ImageNet stats
         max_val = xb.max()
-        if max_val > 1.0:
-            if max_val <= 255.0:
-                xb = xb / 255.0
-            else:  # Unknown range - normalize by max value
-                xb = xb / max_val
-        mean = torch.tensor([0.485, 0.456, 0.406], device=xb.device, dtype=torch.float32).view(1, 3, 1, 1)
-        std = torch.tensor([0.229, 0.224, 0.225], device=xb.device, dtype=torch.float32).view(1, 3, 1, 1)
-        return (xb - mean) / std
+        if max_val > 1.5:
+            xb = xb / 255.0
+        
+        return (xb - self.mean.to(xb.device)) / self.std.to(xb.device)
 
     def get_model(self, data, backbone="nvidia/segformer-b2-finetuned-ade-512-512", **kwargs) -> Module:
         """
@@ -512,15 +498,24 @@ class SegFormer(ModelClass):
 
     def post_process(self, pred: torch.Tensor, thres: float = 0.5) -> torch.Tensor:
         """
-        Function to post process the output of the model in validation/infrencing mode.
-        Args:
-            pred: Raw output of the model for a batch of images
-            thres: Confidence threshold to be used to filter the predictions
-            post_processed_pred: tensor of shape [N, 1, H, W] or a List/Tuple of N tensors of shape [1, H, W], where N - batch size H - height of the image W - width of the image
+        Post-process raw model outputs for binary or multi-class segmentation.
+        Always returns [N, H, W] label masks.
         """
-        if pred.shape[1] == 1:
-            # Binary segmentation → threshold
-            return (torch.sigmoid(pred) > thres).long().squeeze(1)
-        else:
-            # Multi-class segmentation → argmax
-            return torch.argmax(pred, dim=1)
+        pred = pred.detach()
+        # Ensure 4D shape: [N, C, H, W]
+        if pred.ndim == 2:           # [H, W]
+            pred = pred.unsqueeze(0).unsqueeze(0)
+        elif pred.ndim == 3:         # could be [N, H, W] or [1, H, W]
+            if pred.shape[0] > 1:    # [N, H, W]
+                pred = pred.unsqueeze(1)  # -> [N, 1, H, W]
+            else:
+                pred = pred.unsqueeze(0)  # -> [1, 1, H, W]
+
+        # Apply output processing
+        N, C, H, W = pred.shape
+        if C == 1: # Binary segmentation
+            prob = torch.sigmoid(pred)
+            mask = (prob > thres).long()
+            return mask.squeeze(1)      # -> [N, H, W]
+        else: # Multi-class segmentation
+            return torch.argmax(pred, dim=1)  # -> [N, H, W]
