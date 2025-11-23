@@ -2,6 +2,10 @@ import arcpy # type: ignore
 import os
 import sys
 
+# import json
+# import re
+# from pathlib import Path
+
 try:
     TOOLBOX_DIR = os.path.dirname(os.path.abspath(__file__))
 except NameError:
@@ -104,9 +108,10 @@ class Classify(object):
             displayName="Trained Model File (.pth)",
             name="model_file",
             datatype="DEFile",
-            parameterType="Required",
+            parameterType="Optional",
             direction="Input"))
-        params[2].filter.list = ['pth', 'pt']
+        # params[2].filter.type = "ValueList"
+        params[2].value = "Filler"
         
         # Input Raster
         params.append(arcpy.Parameter(
@@ -115,7 +120,6 @@ class Classify(object):
             datatype="GPRasterLayer",
             parameterType="Required",
             direction="Input"))
-        
         
         # Output Raster
         params.append(arcpy.Parameter(
@@ -227,33 +231,33 @@ class Classify(object):
         """Update parameters dynamically based on model selection"""
         
         # When model architecture changes, update related parameters
-        if parameters[0].altered:
-            model_name = parameters[0].valueAsText
+        if parameters[1].altered:
+            model_name = parameters[1].valueAsText
             
             if model_name in self.model_configs:
                 config = self.model_configs[model_name]
                 
                 # Update pretrained backbone dropdown options
-                parameters[8].filter.list = config["backbone_options"]
+                parameters[9].filter.list = config["backbone_options"]
 
                 # Set default backbone if current value not in new list
-                if parameters[8].value not in config["backbone_options"]:
-                    parameters[8].value = config["default_backbone"]
+                if parameters[9].value not in config["backbone_options"]:
+                    parameters[9].value = config["default_backbone"]
 
                 # Update recommended datasizes
-                if not parameters[4].altered:
-                    parameters[4].value = config["recommended_tile_size"]
-                if not parameters[6].altered:
-                    parameters[6].value = config["recommended_batch_size"]
+                if not parameters[5].altered:
+                    parameters[5].value = config["recommended_tile_size"]
+                if not parameters[7].altered:
+                    parameters[7].value = config["recommended_batch_size"]
         return
 
     def updateMessages(self, parameters):
         """Validate parameters and provide helpful messages"""
-        if parameters[4].value and parameters[4].value < 128:
-            parameters[4].setWarningMessage("Tile size < 128 may produce poor results")
-        if parameters[5].value and parameters[4].value:
-            if parameters[5].value >= parameters[4].value / 2:
-                parameters[5].setErrorMessage("Overlap must be less than half the tile size")
+        if parameters[5].value and parameters[5].value < 128:
+            parameters[5].setWarningMessage("Tile size < 128 may produce poor results")
+        if parameters[6].value and parameters[5].value:
+            if parameters[6].value >= parameters[5].value / 2:
+                parameters[6].setErrorMessage("Overlap must be less than half the tile size")
         return
 
     def execute(self, parameters, messages):
@@ -263,17 +267,18 @@ class Classify(object):
             import torch
             import gc
             # Get parameters
-            model_architecture = parameters[0].valueAsText
-            input_raster = parameters[1].valueAsText
+            # CHANGED WAS ORIGINALLY 0-8
+            model_architecture = parameters[1].valueAsText
             model_file = parameters[2].valueAsText
-            output_raster = parameters[3].valueAsText
-            tile_size = parameters[4].value or 512
-            tile_overlap = parameters[5].value or 64
-            batch_size = parameters[6].value or 4
-            use_gpu = parameters[7].value
-            backbone = parameters[8].valueAsText
+            input_raster = parameters[3].valueAsText
+            output_raster = parameters[4].valueAsText
+            tile_size = parameters[5].value or 512
+            tile_overlap = parameters[6].value or 64
+            batch_size = parameters[7].value or 4
+            use_gpu = parameters[8].value
+            backbone = parameters[9].valueAsText
             class_names = [c.strip() for c in parameters[9].valueAsText.split(',')]
-            nodata_value = parameters[10].value or 255
+            nodata_value = parameters[11].value or 255
             
             arcpy.AddMessage("=" * 80)
             arcpy.AddMessage("Semantic Segmentation Tool")
