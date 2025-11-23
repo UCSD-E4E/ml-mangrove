@@ -77,6 +77,17 @@ class Classify(object):
         """Define the tool parameters."""
         params = []
         
+        # Model Task Selection
+        params.append(arcpy.Parameter(
+            displayName="Model Task",
+            name="model_task",
+            datatype="GPString",
+            parameterType="Required",
+            direction="Input"))
+        params[0].filter.type = "ValueList"
+        params[0].filter.list = ["Mangroves", "Human Infrastructure"]
+        params[0].value = "Mangroves"
+        
         # Model Architecture Selection
         params.append(arcpy.Parameter(
             displayName="Model Architecture",
@@ -84,17 +95,9 @@ class Classify(object):
             datatype="GPString",
             parameterType="Required",
             direction="Input"))
-        params[0].filter.type = "ValueList"
-        params[0].filter.list = list(self.model_configs.keys())
-        params[0].value = "SegFormer"
-        
-        # Input Raster
-        params.append(arcpy.Parameter(
-            displayName="Input Raster",
-            name="input_raster",
-            datatype="GPRasterLayer",
-            parameterType="Required",
-            direction="Input"))
+        params[1].filter.type = "ValueList"
+        params[1].filter.list = list(self.model_configs.keys())
+        params[1].value = "SegFormer"
         
         # Model File
         params.append(arcpy.Parameter(
@@ -104,6 +107,15 @@ class Classify(object):
             parameterType="Required",
             direction="Input"))
         params[2].filter.list = ['pth', 'pt']
+        
+        # Input Raster
+        params.append(arcpy.Parameter(
+            displayName="Input Raster",
+            name="input_raster",
+            datatype="GPRasterLayer",
+            parameterType="Required",
+            direction="Input"))
+        
         
         # Output Raster
         params.append(arcpy.Parameter(
@@ -120,8 +132,8 @@ class Classify(object):
             datatype="GPLong",
             parameterType="Optional",
             direction="Input"))
-        params[4].value = 512
-        params[4].category = "Processing Options"
+        params[5].value = 512
+        params[5].category = "Processing Options"
         
         params.append(arcpy.Parameter(
             displayName="Tile Overlap (pixels)",
@@ -129,8 +141,8 @@ class Classify(object):
             datatype="GPLong",
             parameterType="Optional",
             direction="Input"))
-        params[5].value = 64
-        params[5].category = "Processing Options"
+        params[6].value = 64
+        params[6].category = "Processing Options"
         
         params.append(arcpy.Parameter(
             displayName="Batch Size",
@@ -138,10 +150,10 @@ class Classify(object):
             datatype="GPLong",
             parameterType="Optional",
             direction="Input"))
-        params[6].value = 8
-        params[6].filter.type = "Range"
-        params[6].filter.list = [1, 64]
-        params[6].category = "Processing Options"
+        params[7].value = 8
+        params[7].filter.type = "Range"
+        params[7].filter.list = [1, 64]
+        params[7].category = "Processing Options"
         
         # Use GPU
         params.append(arcpy.Parameter(
@@ -150,8 +162,8 @@ class Classify(object):
             datatype="GPBoolean",
             parameterType="Optional",
             direction="Input"))
-        params[7].value = True
-        params[7].category = "Processing Options"
+        params[8].value = True
+        params[8].category = "Processing Options"
 
         # Model Configuration Category
         params.append(arcpy.Parameter(
@@ -160,10 +172,10 @@ class Classify(object):
             datatype="GPString",
             parameterType="Optional",
             direction="Input"))
-        params[8].filter.type = "ValueList"
-        params[8].value = None  # Default will be set dynamically
-        params[8].filter.list = []  # Will be populated dynamically
-        params[8].category = "Model Configuration"
+        params[9].filter.type = "ValueList"
+        params[9].value = None  # Default will be set dynamically
+        params[9].filter.list = []  # Will be populated dynamically
+        params[9].category = "Model Configuration"
         
         # Output Configuration Category
         params.append(arcpy.Parameter(
@@ -172,8 +184,8 @@ class Classify(object):
             datatype="GPString",
             parameterType="Optional",
             direction="Input"))
-        params[9].value = "Human Artifact,Vegetation,Building,Car,Low Vegetation,Road"
-        params[9].category = "Output Configuration"
+        params[10].value = "Human Artifact,Vegetation,Building,Car,Low Vegetation,Road"
+        params[10].category = "Output Configuration"
         
         # NoData Value
         params.append(arcpy.Parameter(
@@ -182,26 +194,28 @@ class Classify(object):
             datatype="GPLong",
             parameterType="Optional",
             direction="Input"))
-        params[10].value = 255
-        params[10].category = "Output Configuration"
+        params[11].value = 255
+        params[11].category = "Output Configuration"
         
         # CHANGED 
         # TEST OPTION A
-        params.append(arcpy.Parameter(
-            displayName="TEST A (folder)",
-            name="test_a",
-            datatype="DEFolder",
-            parameterType="Optional",
-            direction="Input"))
+        # params.append(arcpy.Parameter(
+        #     displayName="TEST A (folder)",
+        #     name="test_a",
+        #     datatype="DEFolder",
+        #     parameterType="Optional",
+        #     direction="Input"))
         
-        # TEST OPTION B 
-        params.append(arcpy.Parameter(
-            displayName="TEST B (.pth)",
-            name="test_b",
-            datatype="DEFile",
-            parameterType="Optional",
-            direction="Input"))
-        params[12].filter.list = ['pth', 'pt']
+        # # TEST OPTION B 
+        # params.append(arcpy.Parameter(
+        #     displayName="Model (.pth)",
+        #     name="Model",
+        #     datatype="DEFile",
+        #     parameterType="Required",
+        #     direction="Input"))
+        # params[11].filter.type = "ValueList"
+        # # params[0].filter.list = list(self.model_configs.keys())
+        # params[11].filter.list = ['pth', 'pt']
         
         return params
 
