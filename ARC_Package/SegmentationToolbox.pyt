@@ -76,6 +76,54 @@ class Classify(object):
         self.canRunInBackground = False
         # Define supported models and their configurations
         self.model_configs = MODEL_CONFIGS
+        
+    def _grab_and_parse_emds(self, task, arch, directory_path):
+                """Grabs all .emd files in the mangrove_classifier folder and extracts the corresponding .pth files for models acceptable for the current classification task."""
+            
+                directory_path = directory_path
+                file_list = []
+                emd_file_count = 0
+                task_dict = {'Mangroves': 'mangrove',
+                                'Human Infrastructure': 'human'}
+                arch_dict = {'ResUNet': 'ResNetUNet',
+                                'SegFormer': 'SegFormer'}
+            
+                for root, dirs, files in os.walk(directory_path):
+                    for file in files:
+                        file_path = os.path.join(root, file)
+                        if file_path.split('.')[-1] == 'emd':
+                            emd_file_count += 1
+                            # Read file
+                            try:    
+                                with open(file_path, 'r', encoding='utf-8') as f:
+                                    s = f.read()
+                                    s = re.sub(r',\s*(\]|})', r'\1', s)
+                                    
+                            except IOError as exc:
+                                return [f"Error reading file {file_path.name}: {exc}"]
+
+                            json_string = json.loads(s)
+                            
+                            #Parse if file is appropriate for task/arch
+                            is_appropriate_task = any([task_dict[task] in pair["Name"].lower() for pair in json_string["Classes"]])
+                            
+                            # file_list.append(f"Is appropriate?: {[task_dict[task] in pair["Name"].lower() for pair in json_string["Classes"]]}")
+                            
+                            is_appropriate_arch = json_string["ModelConfiguration"] == arch_dict[arch]
+                            
+                            # file_list.append(f"Is appropriate arch?: {json_string["Classes"] == arch_dict[arch]}")
+                            
+                            if (is_appropriate_task and is_appropriate_arch):
+                                file_list.append(json_string["ModelFile"])
+                                
+                            # file_list.append(file)
+                file_list = sorted(file_list) 
+                if len(file_list) == 0: 
+                    if emd_file_count < 1:
+                        file_list = ['No models found. Check model folder.']
+                    else:
+                        file_list = ['No models found. Change task/architecture.']
+                return file_list
 
     def getParameterInfo(self):
         """Define the tool parameters."""
@@ -88,6 +136,7 @@ class Classify(object):
             datatype="DEFolder",
             parameterType="Required",
             direction="Input"))
+        params[0].value = "."
         
         # Model Task Selection
         params.append(arcpy.Parameter(
@@ -116,7 +165,7 @@ class Classify(object):
         params.append(arcpy.Parameter(
             displayName="Trained Model File (.pth)",
             name="model_file",
-            datatype="DEFile",
+            datatype="GPString",
             parameterType="Required",
             direction="Input"))
         # Populate initial list of .pth files from default model folder
@@ -126,49 +175,14 @@ class Classify(object):
             default_arch = params[2].value 
             initial_files = []
         
-            # def grab_and_parse_emds(task, arch):
-            #     """Grabs all .emd files in the mangrove_classifier folder and extracts the corresponding .pth files for models acceptable for the current classification task."""
-
-            #     directory_path = Path(os.path.join('.', 'mangrove_classifier'))
-            #     file_list = []
-            #     task_dict = {'Mangroves': 'mangrove',
-            #                     'Human Infrastructure': 'human'}
-            #     arch_dict = {'ResUNet': 'ResnetUNet',
-            #                     'SegFormer': 'SegFormer'}
-
-            #     for file_path in directory_path.iterdir():
-            #         if file_path.is_file():
-            #             if file_path.suffix.lower() == '.emd':
-                            
-            #                 # Read file
-            #                 try:    
-            #                     with open(file_path, 'r', encoding='utf-8') as f:
-            #                         s = f.read()
-            #                         s = re.sub(r',\s*(\]|})', r'\1', s)
-                                    
-            #                 except IOError as exc:
-            #                     return [f"Error reading file {file_path.name}: {exc}"]
-
-            #                 json_string = json.loads(s)
-                            
-            #                 # Parse if file is appropriate for task/arch
-            #                 is_appropriate_task = any([task_dict[task] in pair["Name"].lower() for pair in json_string["Classes"]])
-                            
-            #                 is_appropriate_arch = json_string["Classes"] == arch_dict[arch]
-                            
-            #                 if (is_appropriate_task and is_appropriate_arch):
-            #                     file_list.append(json_string["ModelFile"])
-            #     return file_list
-            
-            # initial_files = grab_and_parse_emds(default_task, default_arch)
+            initial_files = self._grab_and_parse_emds(default_task, default_arch, params[0].valueAsText)
         
         except Exception:
-            initial_files = ['newerer structure failed']
+            initial_files = ['Error: files were not gathered.']
             
-
-        # params[2].filter.type = "ValueList"
-        # params[2].filter.list = initial_files
-        # params[2].value = initial_files[0] if initial_files else None
+        params[3].filter.type = "ValueList"
+        params[3].filter.list = initial_files
+        params[3].value = initial_files[0] if initial_files else None
         
         # Input Raster
         params.append(arcpy.Parameter(
@@ -287,12 +301,27 @@ class Classify(object):
     def updateParameters(self, parameters):
         """Update parameters dynamically based on model selection"""
         
+        
+        # When model folder changes, refresh available model files.
+        if parameters[0].altered:
+            try:
+                task_value = parameters[1].valueAsText or parameters[1].value
+                arch_value = parameters[2].valueAsText or parameters[2].value
+                model_files = self._grab_and_parse_emds(task_value, arch_value, parameters[0].valueAsText)
+                parameters[3].filter.list = model_files
+                cur = parameters[3].value
+                if cur not in model_files:
+                    parameters[3].value = model_files[0] if model_files else None
+            except Exception:
+                pass
+        
+        
         # When model task changes, refresh available model files.
         if parameters[1].altered:
             try:
                 task_value = parameters[1].valueAsText or parameters[1].value
                 arch_value = parameters[2].valueAsText or parameters[2].value
-                model_files = self._list_model_files(task_value, arch_value)
+                model_files = self._grab_and_parse_emds(task_value, arch_value, parameters[0].valueAsText)
                 parameters[3].filter.list = model_files
                 cur = parameters[3].value
                 if cur not in model_files:
@@ -307,6 +336,18 @@ class Classify(object):
             
             if model_name in self.model_configs:
                 config = self.model_configs[model_name]
+                
+                # Update available model files
+                try:
+                    task_value = parameters[1].valueAsText or parameters[1].value
+                    arch_value = parameters[2].valueAsText or parameters[2].value
+                    model_files = self._grab_and_parse_emds(task_value, arch_value, parameters[0].valueAsText)
+                    parameters[3].filter.list = model_files
+                    cur = parameters[3].value
+                    if cur not in model_files:
+                        parameters[3].value = model_files[0] if model_files else None
+                except Exception:
+                    pass
                 
                 # Update pretrained backbone dropdown options
                 parameters[10].filter.list = config["backbone_options"]
