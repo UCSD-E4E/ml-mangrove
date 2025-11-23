@@ -160,7 +160,6 @@ class Classify(object):
         params[2].filter.list = list(self.model_configs.keys())
         params[2].value = "SegFormer"
         
-        # TODO Temporarily changed from DEFile type to GPString
         # Model File
         params.append(arcpy.Parameter(
             displayName="Trained Model File (.pth)",
@@ -381,8 +380,9 @@ class Classify(object):
             import gc
             # Get parameters
             # CHANGED WAS ORIGINALLY 0-8
+            model_folder_directory = parameters[0].valueAsText
             model_architecture = parameters[2].valueAsText
-            model_file = parameters[3].valueAsText
+            model_file = os.path.join(model_folder_directory, parameters[3].valueAsText)
             input_raster = parameters[4].valueAsText
             output_raster = parameters[5].valueAsText
             tile_size = parameters[6].value or 512
