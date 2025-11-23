@@ -2,9 +2,9 @@ import arcpy # type: ignore
 import os
 import sys
 
-# import json
-# import re
-# from pathlib import Path
+import json
+import re
+from pathlib import Path
 
 try:
     TOOLBOX_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -81,6 +81,14 @@ class Classify(object):
         """Define the tool parameters."""
         params = []
         
+        # Folder Containing Models Selection
+        params.append(arcpy.Parameter(
+            displayName="Folder Containing Models",
+            name="model_folder",
+            datatype="DEFolder",
+            parameterType="Required",
+            direction="Input"))
+        
         # Model Task Selection
         params.append(arcpy.Parameter(
             displayName="Model Task",
@@ -88,9 +96,9 @@ class Classify(object):
             datatype="GPString",
             parameterType="Required",
             direction="Input"))
-        params[0].filter.type = "ValueList"
-        params[0].filter.list = ["Mangroves", "Human Infrastructure"]
-        params[0].value = "Mangroves"
+        params[1].filter.type = "ValueList"
+        params[1].filter.list = ["Mangroves", "Human Infrastructure"]
+        params[1].value = "Mangroves"
         
         # Model Architecture Selection
         params.append(arcpy.Parameter(
@@ -99,19 +107,68 @@ class Classify(object):
             datatype="GPString",
             parameterType="Required",
             direction="Input"))
-        params[1].filter.type = "ValueList"
-        params[1].filter.list = list(self.model_configs.keys())
-        params[1].value = "SegFormer"
+        params[2].filter.type = "ValueList"
+        params[2].filter.list = list(self.model_configs.keys())
+        params[2].value = "SegFormer"
         
+        # TODO Temporarily changed from DEFile type to GPString
         # Model File
         params.append(arcpy.Parameter(
             displayName="Trained Model File (.pth)",
             name="model_file",
             datatype="DEFile",
-            parameterType="Optional",
+            parameterType="Required",
             direction="Input"))
+        # Populate initial list of .pth files from default model folder
+        
+        try:
+            default_task = params[1].value 
+            default_arch = params[2].value 
+            initial_files = []
+        
+            # def grab_and_parse_emds(task, arch):
+            #     """Grabs all .emd files in the mangrove_classifier folder and extracts the corresponding .pth files for models acceptable for the current classification task."""
+
+            #     directory_path = Path(os.path.join('.', 'mangrove_classifier'))
+            #     file_list = []
+            #     task_dict = {'Mangroves': 'mangrove',
+            #                     'Human Infrastructure': 'human'}
+            #     arch_dict = {'ResUNet': 'ResnetUNet',
+            #                     'SegFormer': 'SegFormer'}
+
+            #     for file_path in directory_path.iterdir():
+            #         if file_path.is_file():
+            #             if file_path.suffix.lower() == '.emd':
+                            
+            #                 # Read file
+            #                 try:    
+            #                     with open(file_path, 'r', encoding='utf-8') as f:
+            #                         s = f.read()
+            #                         s = re.sub(r',\s*(\]|})', r'\1', s)
+                                    
+            #                 except IOError as exc:
+            #                     return [f"Error reading file {file_path.name}: {exc}"]
+
+            #                 json_string = json.loads(s)
+                            
+            #                 # Parse if file is appropriate for task/arch
+            #                 is_appropriate_task = any([task_dict[task] in pair["Name"].lower() for pair in json_string["Classes"]])
+                            
+            #                 is_appropriate_arch = json_string["Classes"] == arch_dict[arch]
+                            
+            #                 if (is_appropriate_task and is_appropriate_arch):
+            #                     file_list.append(json_string["ModelFile"])
+            #     return file_list
+            
+            # initial_files = grab_and_parse_emds(default_task, default_arch)
+        
+        except Exception:
+            initial_files = ['newerer structure failed']
+            
+
         # params[2].filter.type = "ValueList"
-        params[2].value = "Filler"
+        # params[2].filter.list = initial_files
+        # params[2].value = initial_files[0] if initial_files else None
         
         # Input Raster
         params.append(arcpy.Parameter(
@@ -136,8 +193,8 @@ class Classify(object):
             datatype="GPLong",
             parameterType="Optional",
             direction="Input"))
-        params[5].value = 512
-        params[5].category = "Processing Options"
+        params[6].value = 512
+        params[6].category = "Processing Options"
         
         params.append(arcpy.Parameter(
             displayName="Tile Overlap (pixels)",
@@ -145,8 +202,8 @@ class Classify(object):
             datatype="GPLong",
             parameterType="Optional",
             direction="Input"))
-        params[6].value = 64
-        params[6].category = "Processing Options"
+        params[7].value = 64
+        params[7].category = "Processing Options"
         
         params.append(arcpy.Parameter(
             displayName="Batch Size",
@@ -154,10 +211,10 @@ class Classify(object):
             datatype="GPLong",
             parameterType="Optional",
             direction="Input"))
-        params[7].value = 8
-        params[7].filter.type = "Range"
-        params[7].filter.list = [1, 64]
-        params[7].category = "Processing Options"
+        params[8].value = 8
+        params[8].filter.type = "Range"
+        params[8].filter.list = [1, 64]
+        params[8].category = "Processing Options"
         
         # Use GPU
         params.append(arcpy.Parameter(
@@ -166,8 +223,8 @@ class Classify(object):
             datatype="GPBoolean",
             parameterType="Optional",
             direction="Input"))
-        params[8].value = True
-        params[8].category = "Processing Options"
+        params[9].value = True
+        params[9].category = "Processing Options"
 
         # Model Configuration Category
         params.append(arcpy.Parameter(
@@ -176,10 +233,10 @@ class Classify(object):
             datatype="GPString",
             parameterType="Optional",
             direction="Input"))
-        params[9].filter.type = "ValueList"
-        params[9].value = None  # Default will be set dynamically
-        params[9].filter.list = []  # Will be populated dynamically
-        params[9].category = "Model Configuration"
+        params[10].filter.type = "ValueList"
+        params[10].value = None  # Default will be set dynamically
+        params[10].filter.list = []  # Will be populated dynamically
+        params[10].category = "Model Configuration"
         
         # Output Configuration Category
         params.append(arcpy.Parameter(
@@ -188,8 +245,8 @@ class Classify(object):
             datatype="GPString",
             parameterType="Optional",
             direction="Input"))
-        params[10].value = "Human Artifact,Vegetation,Building,Car,Low Vegetation,Road"
-        params[10].category = "Output Configuration"
+        params[11].value = "Human Artifact,Vegetation,Building,Car,Low Vegetation,Road"
+        params[11].category = "Output Configuration"
         
         # NoData Value
         params.append(arcpy.Parameter(
@@ -198,8 +255,8 @@ class Classify(object):
             datatype="GPLong",
             parameterType="Optional",
             direction="Input"))
-        params[11].value = 255
-        params[11].category = "Output Configuration"
+        params[12].value = 255
+        params[12].category = "Output Configuration"
         
         # CHANGED 
         # TEST OPTION A
@@ -230,34 +287,49 @@ class Classify(object):
     def updateParameters(self, parameters):
         """Update parameters dynamically based on model selection"""
         
-        # When model architecture changes, update related parameters
+        # When model task changes, refresh available model files.
         if parameters[1].altered:
-            model_name = parameters[1].valueAsText
+            try:
+                task_value = parameters[1].valueAsText or parameters[1].value
+                arch_value = parameters[2].valueAsText or parameters[2].value
+                model_files = self._list_model_files(task_value, arch_value)
+                parameters[3].filter.list = model_files
+                cur = parameters[3].value
+                if cur not in model_files:
+                    parameters[3].value = model_files[0] if model_files else None
+            except Exception:
+                pass
+        
+        
+        # When model architecture changes, update related parameters
+        if parameters[2].altered:
+            model_name = parameters[2].valueAsText
             
             if model_name in self.model_configs:
                 config = self.model_configs[model_name]
                 
                 # Update pretrained backbone dropdown options
-                parameters[9].filter.list = config["backbone_options"]
+                parameters[10].filter.list = config["backbone_options"]
 
                 # Set default backbone if current value not in new list
-                if parameters[9].value not in config["backbone_options"]:
-                    parameters[9].value = config["default_backbone"]
+                if parameters[10].value not in config["backbone_options"]:
+                    parameters[10].value = config["default_backbone"]
 
                 # Update recommended datasizes
-                if not parameters[5].altered:
-                    parameters[5].value = config["recommended_tile_size"]
-                if not parameters[7].altered:
-                    parameters[7].value = config["recommended_batch_size"]
+                if not parameters[6].altered:
+                    parameters[6].value = config["recommended_tile_size"]
+                if not parameters[8].altered:
+                    parameters[8].value = config["recommended_batch_size"]
+                    
         return
 
     def updateMessages(self, parameters):
         """Validate parameters and provide helpful messages"""
-        if parameters[5].value and parameters[5].value < 128:
-            parameters[5].setWarningMessage("Tile size < 128 may produce poor results")
-        if parameters[6].value and parameters[5].value:
-            if parameters[6].value >= parameters[5].value / 2:
-                parameters[6].setErrorMessage("Overlap must be less than half the tile size")
+        if parameters[6].value and parameters[6].value < 128:
+            parameters[6].setWarningMessage("Tile size < 128 may produce poor results")
+        if parameters[7].value and parameters[6].value:
+            if parameters[7].value >= parameters[6].value / 2:
+                parameters[7].setErrorMessage("Overlap must be less than half the tile size")
         return
 
     def execute(self, parameters, messages):
@@ -268,17 +340,17 @@ class Classify(object):
             import gc
             # Get parameters
             # CHANGED WAS ORIGINALLY 0-8
-            model_architecture = parameters[1].valueAsText
-            model_file = parameters[2].valueAsText
-            input_raster = parameters[3].valueAsText
-            output_raster = parameters[4].valueAsText
-            tile_size = parameters[5].value or 512
-            tile_overlap = parameters[6].value or 64
-            batch_size = parameters[7].value or 4
-            use_gpu = parameters[8].value
-            backbone = parameters[9].valueAsText
-            class_names = [c.strip() for c in parameters[9].valueAsText.split(',')]
-            nodata_value = parameters[11].value or 255
+            model_architecture = parameters[2].valueAsText
+            model_file = parameters[3].valueAsText
+            input_raster = parameters[4].valueAsText
+            output_raster = parameters[5].valueAsText
+            tile_size = parameters[6].value or 512
+            tile_overlap = parameters[7].value or 64
+            batch_size = parameters[8].value or 4
+            use_gpu = parameters[9].value
+            backbone = parameters[10].valueAsText
+            class_names = [c.strip() for c in parameters[11].valueAsText.split(',')]
+            nodata_value = parameters[12].value or 255
             
             arcpy.AddMessage("=" * 80)
             arcpy.AddMessage("Semantic Segmentation Tool")
