@@ -2,6 +2,10 @@ import arcpy # type: ignore
 import os
 import sys
 
+import json
+import re
+from pathlib import Path
+
 try:
     TOOLBOX_DIR = os.path.dirname(os.path.abspath(__file__))
 except NameError:
@@ -72,10 +76,78 @@ class Classify(object):
         self.canRunInBackground = False
         # Define supported models and their configurations
         self.model_configs = MODEL_CONFIGS
+        
+    def _grab_and_parse_emds(self, task, arch, directory_path):
+                """Grabs all .emd files in the mangrove_classifier folder and extracts the corresponding .pth files for models acceptable for the current classification task."""
+            
+                directory_path = directory_path
+                file_list = []
+                emd_file_count = 0
+                task_dict = {'Mangroves': 'mangrove',
+                                'Human Infrastructure': 'human'}
+                arch_dict = {'ResUNet': 'ResNetUNet',
+                                'SegFormer': 'SegFormer'}
+            
+                for root, dirs, files in os.walk(directory_path):
+                    for file in files:
+                        file_path = os.path.join(root, file)
+                        if file_path.split('.')[-1] == 'emd':
+                            emd_file_count += 1
+                            # Read file
+                            try:    
+                                with open(file_path, 'r', encoding='utf-8') as f:
+                                    s = f.read()
+                                    s = re.sub(r',\s*(\]|})', r'\1', s)
+                                    
+                            except IOError as exc:
+                                return [f"Error reading file {file_path.name}: {exc}"]
+
+                            json_string = json.loads(s)
+                            
+                            #Parse if file is appropriate for task/arch
+                            is_appropriate_task = any([task_dict[task] in pair["Name"].lower() for pair in json_string["Classes"]])
+                            
+                            # file_list.append(f"Is appropriate?: {[task_dict[task] in pair["Name"].lower() for pair in json_string["Classes"]]}")
+                            
+                            is_appropriate_arch = json_string["ModelConfiguration"] == arch_dict[arch]
+                            
+                            # file_list.append(f"Is appropriate arch?: {json_string["Classes"] == arch_dict[arch]}")
+                            
+                            if (is_appropriate_task and is_appropriate_arch):
+                                file_list.append(json_string["ModelFile"])
+                                
+                            # file_list.append(file)
+                file_list = sorted(file_list) 
+                if len(file_list) == 0: 
+                    if emd_file_count < 1:
+                        file_list = ['No models found. Check model folder.']
+                    else:
+                        file_list = ['No models found. Change task/architecture.']
+                return file_list
 
     def getParameterInfo(self):
         """Define the tool parameters."""
         params = []
+        
+        # Folder Containing Models Selection
+        params.append(arcpy.Parameter(
+            displayName="Folder Containing Models",
+            name="model_folder",
+            datatype="DEFolder",
+            parameterType="Required",
+            direction="Input"))
+        params[0].value = "."
+        
+        # Model Task Selection
+        params.append(arcpy.Parameter(
+            displayName="Model Task",
+            name="model_task",
+            datatype="GPString",
+            parameterType="Required",
+            direction="Input"))
+        params[1].filter.type = "ValueList"
+        params[1].filter.list = ["Mangroves", "Human Infrastructure"]
+        params[1].value = "Mangroves"
         
         # Model Architecture Selection
         params.append(arcpy.Parameter(
@@ -84,9 +156,32 @@ class Classify(object):
             datatype="GPString",
             parameterType="Required",
             direction="Input"))
-        params[0].filter.type = "ValueList"
-        params[0].filter.list = list(self.model_configs.keys())
-        params[0].value = "SegFormer"
+        params[2].filter.type = "ValueList"
+        params[2].filter.list = list(self.model_configs.keys())
+        params[2].value = "SegFormer"
+        
+        # Model File
+        params.append(arcpy.Parameter(
+            displayName="Trained Model File (.pth)",
+            name="model_file",
+            datatype="GPString",
+            parameterType="Required",
+            direction="Input"))
+        # Populate initial list of .pth files from default model folder
+        
+        try:
+            default_task = params[1].value 
+            default_arch = params[2].value 
+            initial_files = []
+        
+            initial_files = self._grab_and_parse_emds(default_task, default_arch, params[0].valueAsText)
+        
+        except Exception:
+            initial_files = ['Error: files were not gathered.']
+            
+        params[3].filter.type = "ValueList"
+        params[3].filter.list = initial_files
+        params[3].value = initial_files[0] if initial_files else None
         
         # Input Raster
         params.append(arcpy.Parameter(
@@ -95,15 +190,6 @@ class Classify(object):
             datatype="GPRasterLayer",
             parameterType="Required",
             direction="Input"))
-        
-        # Model File
-        params.append(arcpy.Parameter(
-            displayName="Trained Model File (.pth)",
-            name="model_file",
-            datatype="DEFile",
-            parameterType="Required",
-            direction="Input"))
-        params[2].filter.list = ['pth', 'pt']
         
         # Output Raster
         params.append(arcpy.Parameter(
@@ -120,8 +206,8 @@ class Classify(object):
             datatype="GPLong",
             parameterType="Optional",
             direction="Input"))
-        params[4].value = 512
-        params[4].category = "Processing Options"
+        params[6].value = 512
+        params[6].category = "Processing Options"
         
         params.append(arcpy.Parameter(
             displayName="Tile Overlap (pixels)",
@@ -129,8 +215,8 @@ class Classify(object):
             datatype="GPLong",
             parameterType="Optional",
             direction="Input"))
-        params[5].value = 64
-        params[5].category = "Processing Options"
+        params[7].value = 64
+        params[7].category = "Processing Options"
         
         params.append(arcpy.Parameter(
             displayName="Batch Size",
@@ -138,10 +224,10 @@ class Classify(object):
             datatype="GPLong",
             parameterType="Optional",
             direction="Input"))
-        params[6].value = 8
-        params[6].filter.type = "Range"
-        params[6].filter.list = [1, 64]
-        params[6].category = "Processing Options"
+        params[8].value = 8
+        params[8].filter.type = "Range"
+        params[8].filter.list = [1, 64]
+        params[8].category = "Processing Options"
         
         # Use GPU
         params.append(arcpy.Parameter(
@@ -150,8 +236,8 @@ class Classify(object):
             datatype="GPBoolean",
             parameterType="Optional",
             direction="Input"))
-        params[7].value = True
-        params[7].category = "Processing Options"
+        params[9].value = True
+        params[9].category = "Processing Options"
 
         # Model Configuration Category
         params.append(arcpy.Parameter(
@@ -160,10 +246,10 @@ class Classify(object):
             datatype="GPString",
             parameterType="Optional",
             direction="Input"))
-        params[8].filter.type = "ValueList"
-        params[8].value = None  # Default will be set dynamically
-        params[8].filter.list = []  # Will be populated dynamically
-        params[8].category = "Model Configuration"
+        params[10].filter.type = "ValueList"
+        params[10].value = None  # Default will be set dynamically
+        params[10].filter.list = []  # Will be populated dynamically
+        params[10].category = "Model Configuration"
         
         # Output Configuration Category
         params.append(arcpy.Parameter(
@@ -172,8 +258,8 @@ class Classify(object):
             datatype="GPString",
             parameterType="Optional",
             direction="Input"))
-        params[9].value = "Human Artifact,Vegetation,Building,Car,Low Vegetation,Road"
-        params[9].category = "Output Configuration"
+        params[11].value = "Human Artifact,Vegetation,Building,Car,Low Vegetation,Road"
+        params[11].category = "Output Configuration"
         
         # NoData Value
         params.append(arcpy.Parameter(
@@ -182,8 +268,28 @@ class Classify(object):
             datatype="GPLong",
             parameterType="Optional",
             direction="Input"))
-        params[10].value = 255
-        params[10].category = "Output Configuration"
+        params[12].value = 255
+        params[12].category = "Output Configuration"
+        
+        # CHANGED 
+        # TEST OPTION A
+        # params.append(arcpy.Parameter(
+        #     displayName="TEST A (folder)",
+        #     name="test_a",
+        #     datatype="DEFolder",
+        #     parameterType="Optional",
+        #     direction="Input"))
+        
+        # # TEST OPTION B 
+        # params.append(arcpy.Parameter(
+        #     displayName="Model (.pth)",
+        #     name="Model",
+        #     datatype="DEFile",
+        #     parameterType="Required",
+        #     direction="Input"))
+        # params[11].filter.type = "ValueList"
+        # # params[0].filter.list = list(self.model_configs.keys())
+        # params[11].filter.list = ['pth', 'pt']
         
         return params
 
@@ -194,34 +300,76 @@ class Classify(object):
     def updateParameters(self, parameters):
         """Update parameters dynamically based on model selection"""
         
-        # When model architecture changes, update related parameters
+        
+        # When model folder changes, refresh available model files.
         if parameters[0].altered:
-            model_name = parameters[0].valueAsText
+            try:
+                task_value = parameters[1].valueAsText or parameters[1].value
+                arch_value = parameters[2].valueAsText or parameters[2].value
+                model_files = self._grab_and_parse_emds(task_value, arch_value, parameters[0].valueAsText)
+                parameters[3].filter.list = model_files
+                cur = parameters[3].value
+                if cur not in model_files:
+                    parameters[3].value = model_files[0] if model_files else None
+            except Exception:
+                pass
+        
+        
+        # When model task changes, refresh available model files.
+        if parameters[1].altered:
+            try:
+                task_value = parameters[1].valueAsText or parameters[1].value
+                arch_value = parameters[2].valueAsText or parameters[2].value
+                model_files = self._grab_and_parse_emds(task_value, arch_value, parameters[0].valueAsText)
+                parameters[3].filter.list = model_files
+                cur = parameters[3].value
+                if cur not in model_files:
+                    parameters[3].value = model_files[0] if model_files else None
+            except Exception:
+                pass
+        
+        
+        # When model architecture changes, update related parameters
+        if parameters[2].altered:
+            model_name = parameters[2].valueAsText
             
             if model_name in self.model_configs:
                 config = self.model_configs[model_name]
                 
+                # Update available model files
+                try:
+                    task_value = parameters[1].valueAsText or parameters[1].value
+                    arch_value = parameters[2].valueAsText or parameters[2].value
+                    model_files = self._grab_and_parse_emds(task_value, arch_value, parameters[0].valueAsText)
+                    parameters[3].filter.list = model_files
+                    cur = parameters[3].value
+                    if cur not in model_files:
+                        parameters[3].value = model_files[0] if model_files else None
+                except Exception:
+                    pass
+                
                 # Update pretrained backbone dropdown options
-                parameters[8].filter.list = config["backbone_options"]
+                parameters[10].filter.list = config["backbone_options"]
 
                 # Set default backbone if current value not in new list
-                if parameters[8].value not in config["backbone_options"]:
-                    parameters[8].value = config["default_backbone"]
+                if parameters[10].value not in config["backbone_options"]:
+                    parameters[10].value = config["default_backbone"]
 
                 # Update recommended datasizes
-                if not parameters[4].altered:
-                    parameters[4].value = config["recommended_tile_size"]
                 if not parameters[6].altered:
-                    parameters[6].value = config["recommended_batch_size"]
+                    parameters[6].value = config["recommended_tile_size"]
+                if not parameters[8].altered:
+                    parameters[8].value = config["recommended_batch_size"]
+                    
         return
 
     def updateMessages(self, parameters):
         """Validate parameters and provide helpful messages"""
-        if parameters[4].value and parameters[4].value < 128:
-            parameters[4].setWarningMessage("Tile size < 128 may produce poor results")
-        if parameters[5].value and parameters[4].value:
-            if parameters[5].value >= parameters[4].value / 2:
-                parameters[5].setErrorMessage("Overlap must be less than half the tile size")
+        if parameters[6].value and parameters[6].value < 128:
+            parameters[6].setWarningMessage("Tile size < 128 may produce poor results")
+        if parameters[7].value and parameters[6].value:
+            if parameters[7].value >= parameters[6].value / 2:
+                parameters[7].setErrorMessage("Overlap must be less than half the tile size")
         return
 
     def execute(self, parameters, messages):
@@ -231,17 +379,19 @@ class Classify(object):
             import torch
             import gc
             # Get parameters
-            model_architecture = parameters[0].valueAsText
-            input_raster = parameters[1].valueAsText
-            model_file = parameters[2].valueAsText
-            output_raster = parameters[3].valueAsText
-            tile_size = parameters[4].value or 512
-            tile_overlap = parameters[5].value or 64
-            batch_size = parameters[6].value or 4
-            use_gpu = parameters[7].value
-            backbone = parameters[8].valueAsText
-            class_names = [c.strip() for c in parameters[9].valueAsText.split(',')]
-            nodata_value = parameters[10].value or 255
+            # CHANGED WAS ORIGINALLY 0-8
+            model_folder_directory = parameters[0].valueAsText
+            model_architecture = parameters[2].valueAsText
+            model_file = os.path.join(model_folder_directory, parameters[3].valueAsText)
+            input_raster = parameters[4].valueAsText
+            output_raster = parameters[5].valueAsText
+            tile_size = parameters[6].value or 512
+            tile_overlap = parameters[7].value or 64
+            batch_size = parameters[8].value or 4
+            use_gpu = parameters[9].value
+            backbone = parameters[10].valueAsText
+            class_names = [c.strip() for c in parameters[11].valueAsText.split(',')]
+            nodata_value = parameters[12].value or 255
             
             arcpy.AddMessage("=" * 80)
             arcpy.AddMessage("Semantic Segmentation Tool")
@@ -781,7 +931,6 @@ class ValidateModel(object):
             arcpy.AddMessage("✓ Checkpoint loaded")
             
             
-            
             class DummyDataset:
                 def __init__(self, img_size):
                     self.dummy_img = torch.zeros(3, img_size, img_size)
@@ -792,11 +941,11 @@ class ValidateModel(object):
                     self.classes = [f"Class{i}" for i in range(n_classes)]
                     self.train_ds = DummyDataset(img_size)
 
+
             arcpy.AddMessage("\n[2/3] Initializing model architecture...")
             dummy_data = DummyData(num_classes, img_size=image_size)
             model_wrapper : ModelClass = getattr(models, self.model_configs[model_architecture]["class_name"])()
             
-            # TODO Change
             arcpy.AddMessage(f'Backbone: {backbone, backbone == "resnet18"}, model_wrapper: {model_wrapper}')
             
             model = model_wrapper.get_model(dummy_data, backbone=backbone, state_dict=model_file)
