@@ -322,7 +322,7 @@ class ResUNet(ModelClass):
         return F.cross_entropy(logits, targets, ignore_index=255)
 
 
-    def post_process(self, pred: torch.Tensor, thres: float) -> torch.Tensor:
+    def post_process(self, pred: torch.Tensor, thres: float = 0.5) -> torch.Tensor:
         """
         Function to post process the output of the model in validation/infrencing mode.
         Args:
