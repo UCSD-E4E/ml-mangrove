@@ -96,7 +96,7 @@ class ResNetUNet(ModelClass):
             weights: Pretrained weights to be used for the model."
         """
         super().__init__(state_dict=state_dict, weights=weights)
-        self.name = "ResUNet"
+        self.name = "ResNetUNet"
         self.description = "UNet model for pixel classification"
         self.mean = torch.tensor([0.485, 0.456, 0.406]).view(1,3,1,1)
         self.std = torch.tensor([0.229, 0.224, 0.225]).view(1,3,1,1)

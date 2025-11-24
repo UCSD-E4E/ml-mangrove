@@ -40,9 +40,9 @@ MODEL_CONFIGS = {
         "recommended_batch_size": 16,
         "supports_multispectral": False
     },
-    "ResUNet": {
+    "ResNetUNet": {
         "module": "models",
-        "class_name": "ResUNet",
+        "class_name": "ResNetUNet",
         "default_backbone": "resnet18",
         "backbone_options": [
             "resnet18",
@@ -85,7 +85,7 @@ class Classify(object):
                 emd_file_count = 0
                 task_dict = {'Mangroves': 'mangrove',
                                 'Human Infrastructure': 'human'}
-                arch_dict = {'ResUNet': 'ResNetUNet',
+                arch_dict = {'ResNetUNet': 'ResNetUNet',
                                 'SegFormer': 'SegFormer'}
             
                 for root, dirs, files in os.walk(directory_path):
