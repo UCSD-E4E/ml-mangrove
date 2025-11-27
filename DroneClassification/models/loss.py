@@ -2,12 +2,7 @@ import torch
 import torch.nn as nn
 from torch.nn import functional as F
 from typing import Optional
-from .utils import LabelSmoothSoftmaxCEV1 as LSSCE
 from .utils import *
-from torchvision import transforms
-from functools import partial
-from operator import itemgetter
-
 
 class JaccardLoss(nn.Module):
     """
@@ -16,14 +11,15 @@ class JaccardLoss(nn.Module):
     Combined with Cross-Entropy/BCE loss for better gradient flow
     """
     def __init__(self, num_classes=1, ignore_index=255, smooth=1e-6, 
-                 weight: Optional[torch.Tensor] = None, alpha=0.5):
+                 weight: Optional[torch.Tensor] = None, alpha=0.5, boundary_weight=0.0):
         """
         Args:
             num_classes: Number of segmentation classes
             ignore_index: Index to ignore in loss calculation (default: 255)
             smooth: Smoothing factor to avoid division by zero
             weight: Optional class weights for handling imbalance
-            alpha: Weight between CE and Jaccard loss (0.5 = equal weight)
+            alpha: Weight between CE and Jaccard loss (0.5 = equal weight. Higher alpha = more CE focus)
+            boundary_weight: Weight for Active Boundary Loss component (0.0 = no boundary loss)
         """
         super(JaccardLoss, self).__init__()
         self.num_classes = num_classes
@@ -40,6 +36,8 @@ class JaccardLoss(nn.Module):
                     print(f"Warning: weight shape of {weight.shape} is invalid for binary classification, ignoring weight")
                     weight = None
             self.ce = nn.BCEWithLogitsLoss(pos_weight=weight, reduction='none')
+            # store processed weight for later IoU/Jaccard computations
+            self.iou_weight = torch.sqrt(weight).to(weight.device) if isinstance(weight, torch.Tensor) else None
         else:
             # Multi-class segmentation
             if weight is not None:
@@ -47,6 +45,11 @@ class JaccardLoss(nn.Module):
                     print(f"Warning: weight shape of {weight.shape} is invalid for {num_classes} classes, ignoring weight")
                     weight = None
             self.ce = nn.CrossEntropyLoss(weight=weight, ignore_index=ignore_index, reduction='none')
+            self.iou_weight = torch.sqrt(weight).to(weight.device) if isinstance(weight, torch.Tensor) else None
+
+        if boundary_weight > 0.0:
+            self.boundary_weight = boundary_weight
+            self.boundary_loss = ActiveBoundaryLoss(num_classes=num_classes, ignore_index=ignore_index)
     
     def forward(self, logits, labels):
         """
@@ -114,14 +117,17 @@ class JaccardLoss(nn.Module):
             iou_per_class = (intersection + self.smooth) / (union + self.smooth)
             
             # Average IoU across classes
-            iou = iou_per_class.mean()
-        
+            iou = (iou_per_class * self.iou_weight).sum() / (self.iou_weight.sum() + self.smooth) if self.iou_weight is not None else iou_per_class.mean()
+
         jaccard_loss = 1 - iou
         
-        # Combined loss
-        total_loss = self.alpha * ce_loss + (1 - self.alpha) * jaccard_loss
+        if self.boundary_weight > 0.0:
+            boundary_loss_value = self.boundary_loss(logits, labels)
+            if boundary_loss_value is not None and boundary_loss_value > 0:
+                jaccard_loss = (1-self.boundary_weight) * jaccard_loss + self.boundary_weight * boundary_loss_value
         
-        return total_loss
+        # Combined loss
+        return self.alpha * ce_loss + (1 - self.alpha) * jaccard_loss
 
 class DiceLoss(nn.Module):
     def __init__(self, num_classes=1, weights=None, smooth=1e-5, ignore_index=255):
@@ -212,188 +218,217 @@ class DiceJaccardLoss(nn.Module):
 
 class ActiveBoundaryLoss(nn.Module):
     """
-    Loss function that focuses on the boundaries of segmented regions: https://github.com/wangchi95/active-boundary-loss
-    It computes the KL divergence between predicted and ground truth boundaries, weighted by the distance to the nearest boundary.
-    
-    This encourages the model to pay more attention to the edges of boundary regions during training.
+    Multi-class compatible Active Boundary Loss. It helps sharpen boundaries by computing the KL divergence between them.
+    This is especially hepful for thin structures.
+
+    This is a vectorized implementation of the Active Boundary Loss described in:
+    "Active Boundary Loss for Semantic Segmentation" https://arxiv.org/abs/2102.02696
+
+    - logits: [B, C, H, W]
+    - target: [B, H, W] with values in {0..num_classes-1} or ignore_index
     """
-    def __init__(self, isdetach=True, max_N_ratio = 1/100, ignore_label = 255, label_smoothing=0.2, weight = None, max_clip_dist = 20.):
-        super(ActiveBoundaryLoss, self).__init__()
-        self.ignore_label = ignore_label
-        self.label_smoothing = label_smoothing
-        self.isdetach=isdetach
+    def __init__(
+        self,
+        num_classes: int,
+        ignore_index: int = 255,
+        max_N_ratio: float = 1/100,
+        max_clip_dist: float = 20.0,
+        detach_kl: bool = True,
+    ):
+        super().__init__()
+
+        self.num_classes = num_classes
+        self.ignore_index = ignore_index
         self.max_N_ratio = max_N_ratio
+        self.max_clip_dist = max_clip_dist
+        self.detach_kl = detach_kl
 
-        self.weight_func = lambda w, max_distance=max_clip_dist: torch.clamp(w, max=max_distance) / max_distance
+        # CE over 8 directions
+        self.criterion = nn.CrossEntropyLoss(reduction="none")
 
-        self.dist_map_transform = transforms.Compose([
-            lambda img: img.unsqueeze(0),
-            lambda nd: nd.type(torch.int64),
-            partial(class2one_hot, C=1),
-            itemgetter(0),
-            lambda t: t.cpu().numpy(),
-            one_hot2dist,
-            lambda nd: torch.tensor(nd, dtype=torch.float32)
-        ])
+        # 9 offsets (8 dirs + center)
+        self.offsets: torch.Tensor
+        self.register_buffer(
+            "offsets",
+            torch.tensor([
+                [ 1, 0],
+                [-1, 0],
+                [ 0,-1],
+                [ 0, 1],
+                [-1, 1],
+                [ 1, 1],
+                [-1,-1],
+                [ 1,-1],
+                [ 0, 0],  # center (ignored)
+            ], dtype=torch.long)
+        )
 
-        if label_smoothing == 0:
-            self.criterion = nn.CrossEntropyLoss(
-                weight=weight,
-                ignore_index=ignore_label,
-                reduction='none'
-            )
-        else:
-            self.criterion = LSSCE(
-                reduction='none',
-                ignore_index=ignore_label,
-                lb_smooth = label_smoothing
-            )
 
-    def logits2boundary(self, logit):
+    # ------------------------------------------------------------
+    # GT → boundary mask
+    # ------------------------------------------------------------
+    def gt2boundary(self, target):
+        B, H, W = target.shape
+
+        # vertical changes
+        vert = torch.zeros_like(target, dtype=torch.bool)
+        vert[:, 1:] = target[:, 1:] != target[:, :-1]
+
+        # horizontal changes
+        horiz = torch.zeros_like(target, dtype=torch.bool)
+        horiz[:, :, 1:] = target[:, :, 1:] != target[:, :, :-1]
+
+        boundary = vert | horiz
+        boundary |= (target == self.ignore_index)
+
+        return boundary.unsqueeze(1)     # [B,1,H,W]
+
+
+    # ------------------------------------------------------------
+    # Predicted KL-based boundary
+    # ------------------------------------------------------------
+    def logits2boundary(self, prob):
+        B, C, H, W = prob.shape
+
+        # compute pairwise KL spikes
+        kl_ud = kl_div(prob[:, :, 1:, :], prob[:, :, :-1, :]).sum(1, keepdim=True)
+        kl_lr = kl_div(prob[:, :, :, 1:], prob[:, :, :, :-1]).sum(1, keepdim=True)
+
+        kl_map = F.pad(kl_ud, (0,0,0,1)) + F.pad(kl_lr, (0,1,0,0))
+
+        # adaptive threshold
         eps = 1e-5
-        _, _, h, w = logit.shape
-        max_N = (h*w) * self.max_N_ratio
-        kl_ud = kl_div(logit[:, :, 1:, :], logit[:, :, :-1, :]).sum(1, keepdim=True)
-        kl_lr = kl_div(logit[:, :, :, 1:], logit[:, :, :, :-1]).sum(1, keepdim=True)
-        kl_ud = torch.nn.functional.pad(
-            kl_ud, [0, 0, 0, 1, 0, 0, 0, 0], mode='constant', value=0)
-        kl_lr = torch.nn.functional.pad(
-            kl_lr, [0, 1, 0, 0, 0, 0, 0, 0], mode='constant', value=0)
-        kl_combine = kl_lr+kl_ud
-        while True: # avoid the case that full image is the same color
-            kl_combine_bin = (kl_combine > eps).to(torch.float)
-            if kl_combine_bin.sum() > max_N:
-                eps *=1.2
-            else:
+        max_N = H * W * self.max_N_ratio
+
+        with torch.no_grad():
+            while True:
+                mask = kl_map > eps
+                if mask.sum() > max_N:
+                    eps *= 1.2
+                else:
+                    break
+
+        # dilate to stabilize edges
+        mask = mask.float()
+        mask = F.max_pool2d(mask, 3, 1, 1) > 0
+
+
+        return mask.squeeze(1)      # [B,H,W] bool
+
+
+    # ------------------------------------------------------------
+    # Fast signed distance via repeated 3×3 erosions (DT approx)
+    # ------------------------------------------------------------
+    def get_dist_maps(self, boundary_mask):
+        """
+        boundary_mask: [B,1,H,W] or [B,H,W]
+        Returns [B,H,W] signed distances (negative inside).
+        """
+
+        if boundary_mask.dim() == 4:
+            boundary_mask = boundary_mask[:,0]
+
+        B, H, W = boundary_mask.shape
+        device = boundary_mask.device
+
+        # distance accumulates iterations
+        dist = torch.zeros((B, H, W), device=device)
+
+        # working mask: 1=inside, 0=boundary/holes
+        active = (~boundary_mask).float()
+
+        # iterate approx EDT (fixed 20 steps max)
+        for i in range(1, 21):
+            new_active = F.max_pool2d(active.unsqueeze(1), 3, 1, 1).squeeze(1)
+            delta = (active > 0) & (new_active < active)
+            if not delta.any():
                 break
-        #dilate
-        dilate_weight = torch.ones((1,1,3,3)).cuda()
-        edge2 = torch.nn.functional.conv2d(kl_combine_bin, dilate_weight, stride=1, padding=1)
-        edge2 = edge2.squeeze(1)  # NCHW->NHW
-        kl_combine_bin = (edge2 > 0)
-        return kl_combine_bin
+            active[delta] = 0
+            dist[delta] = float(i)
 
-    def gt2boundary(self, gt, ignore_label=-1):  # gt NHW
-
-        # Handle both [B, H, W] and [B, C, H, W]
-        if gt.dim() == 3:
-            # [B, H, W] case
-            gt_ud = gt[:, 1:, :] - gt[:, :-1, :]
-            gt_lr = gt[:, :, 1:] - gt[:, :, :-1]
-            gt_ud = F.pad(gt_ud, [0, 0, 0, 1], value=0) != 0
-            gt_lr = F.pad(gt_lr, [0, 1, 0, 0], value=0) != 0
-        elif gt.dim() == 4:
-            # [B, C, H, W] case
-            gt_ud = gt[:, :, 1:, :] - gt[:, :, :-1, :]
-            gt_lr = gt[:, :, :, 1:] - gt[:, :, :, :-1]
-            gt_ud = F.pad(gt_ud, [0, 0, 0, 1], value=0) != 0
-            gt_lr = F.pad(gt_lr, [0, 1, 0, 0], value=0) != 0
-        else:
-            raise ValueError(f"Expected 3D or 4D tensor, got {gt.dim()}D with shape {gt.shape}")
-   
-        gt_combine = gt_lr+gt_ud
-        del gt_lr
-        del gt_ud
-        
-        # set 'ignore area' to all boundary
-        gt_combine += (gt==ignore_label)
-        
-        return gt_combine > 0
-
-    def get_direction_gt_predkl(self, pred_dist_map, pred_bound, logits):
-        # NHW,NHW,NCHW
-        eps = 1e-5
-        # bound = torch.where(pred_bound)  # 3k
-        bound = torch.nonzero(pred_bound*1)
-        n,x,y = bound.T
-        max_dis = 1e5
-
-        logits = logits.permute(0,2,3,1) # NHWC
-
-        pred_dist_map_d = torch.nn.functional.pad(pred_dist_map,(1,1,1,1,0,0),mode='constant', value=max_dis) # NH+2W+2
-
-        logits_d = torch.nn.functional.pad(logits,(0,0,1,1,1,1,0,0),mode='constant') # N(H+2)(W+2)C
-        logits_d[:,0,:,:] = logits_d[:,1,:,:] # N(H+2)(W+2)C
-        logits_d[:,-1,:,:] = logits_d[:,-2,:,:] # N(H+2)(W+2)C
-        logits_d[:,:,0,:] = logits_d[:,:,1,:] # N(H+2)(W+2)C
-        logits_d[:,:,-1,:] = logits_d[:,:,-2,:] # N(H+2)(W+2)C
-        
-        """
-        | 4| 0| 5|
-        | 2| 8| 3|
-        | 6| 1| 7|
-        """
-        x_range = [1, -1,  0, 0, -1,  1, -1,  1, 0]
-        y_range = [0,  0, -1, 1,  1,  1, -1, -1, 0]
-        dist_maps = torch.zeros((0,len(x))).cuda() # 8k
-        kl_maps = torch.zeros((0,len(x))).cuda() # 8k
-
-        kl_center = logits[(n,x,y)] # KC
-
-        for dx, dy in zip(x_range, y_range):
-            dist_now = pred_dist_map_d[(n,x+dx+1,y+dy+1)]
-            dist_maps = torch.cat((dist_maps,dist_now.unsqueeze(0)),0)
-
-            if dx != 0 or dy != 0:
-                logits_now = logits_d[(n,x+dx+1,y+dy+1)]
-                # kl_map_now = torch.kl_div((kl_center+eps).log(), logits_now+eps).sum(2)  # 8KC->8K
-                if self.isdetach:
-                    logits_now = logits_now.detach()
-                kl_map_now = kl_div(kl_center, logits_now)
-                
-                kl_map_now = kl_map_now.sum(1)  # KC->K
-                kl_maps = torch.cat((kl_maps,kl_map_now.unsqueeze(0)),0)
-                torch.clamp(kl_maps, min=0.0, max=20.0)
-
-        # direction_gt shound be Nk  (8k->K)
-        direction_gt = torch.argmin(dist_maps, dim=0)
-        # weight_ce = pred_dist_map[bound]
-        weight_ce = pred_dist_map[(n,x,y)]
-        # print(weight_ce)
-
-        # delete if min is 8 (local position)
-        direction_gt_idx = [direction_gt!=8]
-        direction_gt = direction_gt[direction_gt_idx]
+        return dist
 
 
-        kl_maps = torch.transpose(kl_maps,0,1)
-        direction_pred = kl_maps[direction_gt_idx]
-        weight_ce = weight_ce[direction_gt_idx]
-
-        return direction_gt, direction_pred, weight_ce
-
-    def get_dist_maps(self, target):
-        target_detach = target.clone().detach()
-        dist_maps = torch.cat([self.dist_map_transform(target_detach[i]) for i in range(target_detach.shape[0])])
-        out = -dist_maps
-        out = torch.where(out>0, out, torch.zeros_like(out))
-        
-        return out
-
+    # ------------------------------------------------------------
+    # FULL LOSS FORWARD
+    # ------------------------------------------------------------
     def forward(self, logits, target):
-        eps = 1e-10
-        ph, pw = logits.size(2), logits.size(3)
-        h, w = target.size(1), target.size(2)
+        B, C, H, W = logits.shape
+        device = logits.device
 
-        if ph != h or pw != w:
-            logits = F.interpolate(input=logits, size=(
-                h, w), mode='bilinear', align_corners=True)
+        # resize if needed
+        if logits.shape[2:] != target.shape[1:]:
+            logits = F.interpolate(logits, target.shape[1:], mode="bilinear", align_corners=True)
 
-        gt_boundary = self.gt2boundary(target, ignore_label=self.ignore_label)
+        prob = logits.softmax(dim=1)
 
-        dist_maps = self.get_dist_maps(gt_boundary).cuda() # <-- it will slow down the training, you can put it to dataloader.
+        gt_bnd  = self.gt2boundary(target)
+        pred_bnd = self.logits2boundary(prob)
 
-        pred_boundary = self.logits2boundary(logits)
-        if pred_boundary.sum() < 1: # avoid nan
-            return None # you should check in the outside. if None, skip this loss.
-        
-        direction_gt, direction_pred, weight_ce = self.get_direction_gt_predkl(dist_maps, pred_boundary, logits) # NHW,NHW,NCHW
+        # nothing predicted
+        if pred_bnd.sum() == 0:
+            return None
 
-        # direction_pred [K,8], direction_gt [K]
-        loss = self.criterion(direction_pred, direction_gt) # careful
-        
-        weight_ce = self.weight_func(weight_ce)
-        loss = (loss * weight_ce).mean()  # add distance weight
+        # signed distance
+        dist = self.get_dist_maps(gt_bnd)   # [B,H,W]
+
+        # gather boundary coords (fix batch=1 issue)
+        coords = torch.nonzero(pred_bnd, as_tuple=False)
+
+        if coords.numel() == 0:
+            return None
+
+        # coords shape can be [K,2] or [K,3]
+        if coords.shape[1] == 2:
+            b_idx = torch.zeros(coords.size(0), dtype=torch.long, device=device)
+            y_idx = coords[:,0]
+            x_idx = coords[:,1]
+        elif coords.shape[1] == 3:
+            b_idx, y_idx, x_idx = coords.T
+        else:
+            raise RuntimeError(f"Unexpected coords shape {coords.shape}")
+
+        K = coords.size(0)
+
+        # offsets to neighbors
+        off = self.offsets.to(device)    # [9,2]
+
+        oy = (y_idx[:,None] + off[:,0]).clamp(0, H-1)
+        ox = (x_idx[:,None] + off[:,1]).clamp(0, W-1)
+
+        # distances for GT direction
+        dist_vals = dist[b_idx[:,None], oy, ox]    # [K,9]
+        dir_gt = torch.argmin(dist_vals, dim=1)
+        valid = (dir_gt != 8)
+
+        if not valid.any():
+            return None
+
+        dir_gt = dir_gt[valid]
+        oy8 = oy[valid, :8]
+        ox8 = ox[valid, :8]
+        b_valid = b_idx[valid]
+        y_valid = y_idx[valid]
+        x_valid = x_idx[valid]
+
+        # KL(center || neighbors)
+        prob_hw = prob.permute(0,2,3,1)  # [B,H,W,C]
+
+        center = prob_hw[b_valid, y_valid, x_valid]       # [K,C]
+        neigh  = prob_hw[b_valid[:,None], oy8, ox8]       # [K,8,C]
+
+        if self.detach_kl:
+            neigh = neigh.detach()
+
+        kl_vals = kl_div(center.unsqueeze(1).expand_as(neigh)+1e-8, neigh).sum(dim=2)  # [K,8]
+
+        # distance weights
+        w = -dist[b_valid, y_valid, x_valid]
+        w = torch.clamp(w / self.max_clip_dist, 0, 1)
+
+        # CE over 8 directions
+        loss = self.criterion(kl_vals, dir_gt)
+        loss = (loss * w).mean()
 
         return loss
 
