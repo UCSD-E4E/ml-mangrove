@@ -1,10 +1,455 @@
-import arcpy # type: ignore
-import os
-import sys
+# -*- coding: utf-8 -*-
+"""
+Semantic Segmentation Toolbox (Dynamic EMD-Driven)
 
-import json
+Drop this file into a folder with:
+    - ModelClasses.py   (defines ModelClass, ResNetUNet, SegFormer, etc.)
+    - One or more .emd  (ESRI model definition files)
+    - Corresponding .pth model weight files
+
+ArcGIS Pro will detect this as a Python toolbox (.pyt).
+"""
+
+import arcpy  # type: ignore
+import os
 import re
-from pathlib import Path
+import json
+import sys
+import gc
+import tempfile
+import numpy as np
+from osgeo import gdal, gdalconst  # type: ignore
+import torch
+
+sys.path.insert(0, os.path.dirname(__file__))
+import models  # local import of model classes
+from models import __all__ as model_class_names, ModelClass
+
+# ------------------------------------------------------------------------------
+# Toolbox path / imports
+# ------------------------------------------------------------------------------
+
+def process_raster(input_path, output_path,
+                   model_class, model,
+                   device, tile_size, overlap, batch_size,
+                   nodata_value, extract_bands, threshold,
+                   use_tta: bool = False):
+    """
+    Process raster with tiling using smooth blending, keeping all heavy
+    computation in PyTorch tensors (optionally on GPU).
+    """
+
+    model.eval()
+    use_amp = (device.type == "cuda")
+
+    # ------------------------------------------------------------------
+    # Output handling (GDB vs TIFF)
+    # ------------------------------------------------------------------
+    is_gdb = ('.gdb' in output_path.lower()) or ('.sde' in output_path.lower())
+    if is_gdb:
+        temp_dir = tempfile.gettempdir()
+        temp_output = os.path.join(temp_dir, "temp_output.tif")
+        arcpy.AddMessage(f"  Creating temporary file: {temp_output}")
+        actual_output = temp_output
+    else:
+        actual_output = output_path
+
+    # ------------------------------------------------------------------
+    # Open input raster
+    # ------------------------------------------------------------------
+    src_ds = gdal.Open(input_path, gdalconst.GA_ReadOnly)
+    if src_ds is None:
+        raise ValueError(f"Cannot open raster: {input_path}")
+
+    width = src_ds.RasterXSize
+    height = src_ds.RasterYSize
+    total_bands = src_ds.RasterCount
+
+    if extract_bands:
+        band_indices = [b for b in extract_bands if 1 <= b <= total_bands]
+    else:
+        band_indices = list(range(1, min(total_bands, 3) + 1))
+
+    n_bands = len(band_indices)
+    arcpy.AddMessage(f"  Size: {width} x {height} pixels")
+    arcpy.AddMessage(f"  Bands used: {n_bands} (indices: {band_indices})")
+
+    # Input nodata per band
+    input_nodata = []
+    for bidx in band_indices:
+        band = src_ds.GetRasterBand(bidx)
+        input_nodata.append(band.GetNoDataValue())
+
+    # ------------------------------------------------------------------
+    # Create output raster
+    # ------------------------------------------------------------------
+    driver = gdal.GetDriverByName('GTiff')
+    dst_ds = driver.Create(
+        actual_output, width, height, 1, gdal.GDT_Byte,
+        options=['COMPRESS=LZW', 'TILED=YES', 'BIGTIFF=IF_SAFER']
+    )
+    dst_ds.SetGeoTransform(src_ds.GetGeoTransform())
+    dst_ds.SetProjection(src_ds.GetProjection())
+    dst_band = dst_ds.GetRasterBand(1)
+    dst_band.SetNoDataValue(nodata_value)
+
+    # ------------------------------------------------------------------
+    # Tiling setup
+    # ------------------------------------------------------------------
+    stride = tile_size - overlap
+    n_tiles_x = int(np.ceil(width / stride))
+    n_tiles_y = int(np.ceil(height / stride))
+    total_tiles = n_tiles_x * n_tiles_y
+
+    arcpy.AddMessage(f"  Processing {total_tiles} tiles ({n_tiles_x} x {n_tiles_y})")
+    if use_tta:
+        arcpy.AddMessage("  TTA enabled")
+    arcpy.SetProgressor("step", "Processing tiles...", 0, total_tiles, 1)
+
+    # ------------------------------------------------------------------
+    # Determine num_classes
+    # ------------------------------------------------------------------
+    with torch.no_grad():
+        dummy = torch.zeros((1, n_bands, tile_size, tile_size),
+                            dtype=torch.float32, device=device)
+        dummy_out = model(dummy)
+
+        if isinstance(dummy_out, (tuple, list)):
+            dummy_out = dummy_out[0]
+
+        if dummy_out.ndim == 3:
+            num_classes = 1
+        else:
+            num_classes = dummy_out.shape[1]
+
+        del dummy, dummy_out
+
+    # ------------------------------------------------------------------
+    # Global accumulators
+    # ------------------------------------------------------------------
+    accum = torch.zeros((num_classes, height, width),
+                          dtype=torch.float32, device=device)
+    weight = torch.zeros((height, width),
+                           dtype=torch.float32, device=device)
+
+    # ------------------------------------------------------------------
+    # Precompute blending masks
+    # ------------------------------------------------------------------
+    # Pyramid blend mask (edge fade)
+    w = torch.linspace(0.0, 1.0, steps=tile_size, device=device)
+    wx = torch.minimum(w, torch.flip(w, dims=[0]))
+    blend_mask = torch.outer(wx, wx)  # [H, W]
+    blend_mask = blend_mask / blend_mask.max()
+
+    # Edge weight mask (ESRI-style edge confidence taper)
+    edge_weight_mask_tensor = compute_edge_weight(
+        tile_size=tile_size,
+        padding=overlap,
+        device=device
+    )
+
+    # TTA transforms indices
+    tta_transforms = [0]
+    if use_tta:
+        # 4 rotations: 0, 90, 180, 270
+        tta_transforms = [0, 1, 2, 3]
+
+    processed = 0
+
+    # ------------------------------------------------------------------
+    # Main tile loop (torch accumulation)
+    # ------------------------------------------------------------------
+    with torch.no_grad():
+        for tile_idx in range(total_tiles):
+            try:
+                ty, tx = divmod(tile_idx, n_tiles_x)
+                x_off = tx * stride
+                y_off = ty * stride
+                x_size = min(tile_size, width - x_off)
+                y_size = min(tile_size, height - y_off)
+
+                # -----------------------------
+                # Read tile (NumPy, minimal)
+                # -----------------------------
+                tile_data_np = np.zeros((n_bands, tile_size, tile_size),
+                                        dtype=np.float32)
+                tile_mask_np = np.ones((tile_size, tile_size),
+                                       dtype=np.float32)
+
+                for i, bidx in enumerate(band_indices):
+                    band = src_ds.GetRasterBand(bidx)
+                    data = band.ReadAsArray(x_off, y_off, x_size, y_size)
+                    if data is not None:
+                        tile_data_np[i, :y_size, :x_size] = data
+                        if input_nodata[i] is not None:
+                            valid = (data != input_nodata[i]).astype(np.float32)
+                            tile_mask_np[:y_size, :x_size] *= valid
+
+                # -----------------------------
+                # Convert to torch tensors
+                # -----------------------------
+                tile_data = torch.from_numpy(tile_data_np).to(
+                    device=device, dtype=torch.float32
+                )  # [C, H, W] on device
+                tile_mask = torch.from_numpy(tile_mask_np).to(
+                    device=device, dtype=torch.float32
+                )  # [H, W]
+
+                # Zero out invalid pixels
+                tile_data[:, tile_mask == 0] = 0.0
+
+                # -----------------------------
+                # TTA loop (torch only)
+                # -----------------------------
+                tile_logits = torch.zeros(
+                    (num_classes, tile_size, tile_size),
+                    dtype=torch.float32,
+                    device=device
+                )
+
+                for tta_idx in tta_transforms:
+                    # Apply transform in tensor space
+                    t_in = apply_tta_transform(tile_data, tta_idx)  # [C,H,W]
+
+                    # ModelClass normalization
+                    t_in = model_class.transform_input(t_in)
+                    # transform_input may add batch dim; ensure device
+                    t_in = t_in.to(device=device, dtype=torch.float32)  # [1,C,H,W]
+
+                    with torch.amp.autocast_mode.autocast(device_type=device.type):
+                        out = model(t_in)  # [1,C',H,W] or similar
+
+                    if isinstance(out, (tuple, list)):
+                        out = out[0]
+
+                    # Ensure shape [C, H, W]
+                    if out.ndim == 2:
+                        out = out.unsqueeze(0)  # [1,H,W]
+                    if out.ndim == 3:
+                        # assume [C,H,W]
+                        pass
+                    elif out.ndim == 4:
+                        out = out.squeeze(0)  # remove batch -> [C,H,W]
+                    else:
+                        raise RuntimeError(
+                            f"Unexpected model output ndim={out.ndim}"
+                        )
+
+                    # Reverse TTA
+                    out = reverse_tta_transform(out, tta_idx)  # [C,H,W]
+
+                    # If model produced single-channel but num_classes>1, this is strange;
+                    # but usually C == num_classes or 1.
+                    if out.shape[0] == 1 and num_classes > 1:
+                        # Broadcast to all classes (rare, but safe)
+                        out = out.repeat(num_classes, 1, 1)
+                    elif out.shape[0] != num_classes:
+                        # If num_classes==1, just take first channel
+                        if num_classes == 1:
+                            out = out[0:1, :, :]
+                        else:
+                            raise RuntimeError(
+                                f"Model output channels ({out.shape[0]}) "
+                                f"!= num_classes ({num_classes})"
+                            )
+
+                    tile_logits += out
+
+                # Average across TTA
+                tile_logits /= float(len(tta_transforms))
+
+                # -----------------------------
+                # Blending weights (torch)
+                # -----------------------------
+                y_end = min(y_off + tile_size, height)
+                x_end = min(x_off + tile_size, width)
+                tile_h = y_end - y_off
+                tile_w = x_end - x_off
+
+                # Combine blend mask, nodata mask, and edge weight
+                wmask_t = (
+                    blend_mask[:tile_h, :tile_w]
+                    * tile_mask[:tile_h, :tile_w]
+                    * edge_weight_mask_tensor[:tile_h, :tile_w]
+                )  # [Htile, Wtile]
+
+                # Accumulate logits
+                accum[:, y_off:y_end, x_off:x_end] += (
+                    tile_logits[:, :tile_h, :tile_w] * wmask_t.unsqueeze(0)
+                )
+                weight[y_off:y_end, x_off:x_end] += wmask_t
+
+                processed += 1
+
+                if processed % 50 == 0:
+                    gc.collect()
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+
+                if processed % 10 == 0:
+                    arcpy.SetProgressorPosition(processed)
+                    arcpy.AddMessage(
+                        f"  Progress: {processed}/{total_tiles} "
+                        f"({100.0 * processed / total_tiles:.1f}%)"
+                    )
+
+            except Exception as e:
+                arcpy.AddWarning(f"  Failed to process tile {tile_idx}: {e}")
+                processed += 1
+
+    arcpy.ResetProgressor()
+
+    # ------------------------------------------------------------------
+    # Final blending & post-processing (torch)
+    # ------------------------------------------------------------------
+    safe_weight_t = torch.where(
+        weight == 0.0,
+        torch.tensor(1.0, device=device, dtype=torch.float32),
+        weight
+    )  # [H,W]
+
+    blended_t = accum / safe_weight_t.unsqueeze(0)  # [C,H,W]
+
+    # ModelClass post_process expects [N,C,H,W] or similar
+    pred_t = model_class.post_process(
+        blended_t.unsqueeze(0),  # [1,C,H,W]
+        thres=threshold
+    )
+
+    # Ensure [H,W]
+    while pred_t.ndim > 2:
+        pred_t = pred_t.squeeze(0)
+
+    pred_t = pred_t.to(torch.int64)
+
+    # Apply nodata where weight is zero
+    pred_t = pred_t.clone()
+    pred_t[weight == 0.0] = int(nodata_value)
+
+    # Convert once to NumPy for GDAL
+    final_np = pred_t.cpu().numpy().astype(np.uint8)
+
+    dst_band.WriteArray(final_np)
+    dst_band.FlushCache()
+    dst_ds.FlushCache()
+
+    dst_band = None
+    dst_ds = None
+    src_ds = None
+
+    arcpy.AddMessage(f"Processed {total_tiles} tiles with tensorized blending")
+
+    # Add Class Names to metadata
+    
+    try:
+        classnames = ",".join(class_names)               # ["No Mangrove","Mangrove"]
+        classcodes = ",".join(str(i) for i in range(len(class_names)))
+
+        arcpy.AddMessage("✓ Writing class metadata to raster...")
+
+        arcpy.management.SetRasterProperties(
+            output_raster,
+            classnames=classnames,
+            classcodes=classcodes
+        )
+
+        arcpy.AddMessage(f"✓ SetRasterProperties: classnames={classnames}")
+        arcpy.AddMessage(f"✓ SetRasterProperties: classcodes={classcodes}")
+
+    except Exception as e:
+        arcpy.AddWarning(f"⚠ Failed to write class metadata: {e}")
+
+    # ------------------------------------------------------------------
+    # If geodatabase output, copy temp TIFF → GDB
+    # ------------------------------------------------------------------
+    if is_gdb:
+        arcpy.AddMessage("  Copying to geodatabase...")
+        try:
+            arcpy.management.CopyRaster(
+                actual_output,
+                output_path,
+                pixel_type="8_BIT_UNSIGNED",
+                nodata_value=nodata_value
+            )
+            arcpy.AddMessage(f"✓ Saved to geodatabase: {output_path}")
+            try:
+                os.remove(actual_output)
+            except Exception:
+                pass
+        except Exception as e:
+            arcpy.AddError(f"Failed to save to geodatabase: {e}")
+            arcpy.AddError(f"Temporary output saved at: {actual_output}")
+            raise
+
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+def compute_edge_weight(tile_size: int, padding: int, device):
+    """
+    Create a [tile_size, tile_size] edge weight mask (torch) that tapers
+    weights toward the tile borders within `padding` pixels.
+    """
+    import torch
+    weight = torch.ones((tile_size, tile_size),
+                        dtype=torch.float32, device=device)
+    if padding <= 0:
+        return weight
+
+    max_p = min(padding, tile_size // 2)
+
+    # vertical fade (top & bottom)
+    for i in range(max_p):
+        factor = float(i + 1) / float(max_p)
+        weight[i, :] *= factor
+        weight[tile_size - 1 - i, :] *= factor
+
+    # horizontal fade (left & right)
+    for j in range(max_p):
+        factor = float(j + 1) / float(max_p)
+        weight[:, j] *= factor
+        weight[:, tile_size - 1 - j] *= factor
+
+    return weight
+
+def apply_tta_transform(x: torch.Tensor, idx: int) -> torch.Tensor:
+    """
+    Apply dihedral-style transform in torch.
+    x: [C,H,W].
+    """
+    # rotations
+    if idx == 0: return x
+    elif idx == 1: return torch.rot90(x, k=1, dims=(1, 2))
+    elif idx == 2: return torch.rot90(x, k=2, dims=(1, 2))
+    elif idx == 3: return torch.rot90(x, k=3, dims=(1, 2))
+    # flips
+    elif idx == 4: return torch.flip(x, dims=(2,))          # horizontal
+    elif idx == 5: return torch.flip(x, dims=(1,))          # vertical
+    elif idx == 6: return torch.rot90(torch.flip(x, dims=(2,)), k=1, dims=(1, 2))
+    elif idx == 7: return torch.rot90(torch.flip(x, dims=(1,)), k=1, dims=(1, 2))
+    else: return x
+
+def reverse_tta_transform(x: torch.Tensor, idx: int) -> torch.Tensor:
+    """
+    Inverse of apply_tta_transform. x: [C,H,W]
+    """
+    # inverse of 0 is 0
+    if idx == 0: return x
+    # inverse of rot90(k) is rot90(4-k)
+    elif idx == 1: return torch.rot90(x, k=3, dims=(1, 2))
+    elif idx == 2: return torch.rot90(x, k=2, dims=(1, 2))
+    elif idx == 3: return torch.rot90(x, k=1, dims=(1, 2))
+    elif idx == 4: return torch.flip(x, dims=(2,))
+    elif idx == 5: return torch.flip(x, dims=(1,))
+    elif idx == 6:
+        # inverse of flip_h + rot90 is rot270 + flip_h
+        x = torch.rot90(x, k=3, dims=(1, 2))
+        return torch.flip(x, dims=(2,))
+    elif idx == 7:
+        # inverse of flip_v + rot90 is rot270 + flip_v
+        x = torch.rot90(x, k=3, dims=(1, 2))
+        return torch.flip(x, dims=(1,))
+    else: return x
 
 try:
     TOOLBOX_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -15,485 +460,783 @@ except NameError:
 if TOOLBOX_DIR not in sys.path:
     sys.path.insert(0, TOOLBOX_DIR)
 
-import ModelClasses as models
-from ModelClasses import *
-from ModelClasses import ModelClass
-import torch
-import numpy as np
-import gc
+# ------------------------------------------------------------------------------
+# Model Registry
+# ------------------------------------------------------------------------------
 
-# Define supported models and their configurations
-MODEL_CONFIGS = {
-    "SegFormer": {
-        "module": "models",
-        "class_name": "SegFormer",
-        "default_backbone": "nvidia/segformer-b2-finetuned-ade-512-512",
-        "backbone_options": [
-            "nvidia/segformer-b0-finetuned-ade-512-512",
-            "nvidia/segformer-b1-finetuned-ade-512-512",
-            "nvidia/segformer-b2-finetuned-ade-512-512",
-            "nvidia/segformer-b3-finetuned-ade-512-512",
-            "nvidia/segformer-b4-finetuned-ade-512-512",
-            "nvidia/segformer-b5-finetuned-ade-640-640"
-        ],
-        "recommended_tile_size": 512,
-        "recommended_batch_size": 16,
-        "supports_multispectral": False
-    },
-    "ResUNet": {
-        "module": "models",
-        "class_name": "ResUNet",
-        "default_backbone": "resnet18",
-        "backbone_options": [
-            "resnet18",
-            "resnet34",
-            "resnet50",
-            "resnet101",
-            "resnet152"
-        ],
-        "recommended_tile_size": 224,
-        "recommended_batch_size": 16,
-        "supports_multispectral": False
-    }
-}
+class ModelRegistry:
+    """Scans a folder for EMD files and provides query helpers."""
+
+    def __init__(self):
+        self.models = []  # list of dicts (emd contents + metadata)
+
+    def scan_folder(self, folder: str):
+        """Scan folder (recursively) for .emd and parse them."""
+        self.models = []
+        if not folder:
+            return self.models
+
+        folder = os.path.abspath(folder)
+
+        for root, _, files in os.walk(folder):
+            for fn in files:
+                if not fn.lower().endswith(".emd"):
+                    continue
+
+                emd_path = os.path.join(root, fn)
+                try:
+                    emd = load_emd(emd_path)
+                    # Attach metadata
+                    emd["emd_path"] = emd_path
+
+                    # ModelFile may be relative; store full .pth path
+                    model_file = emd.get("ModelFile")
+                    if model_file is not None:
+                        if os.path.isabs(model_file):
+                            pth_path = model_file
+                        else:
+                            pth_path = os.path.join(root, model_file)
+                    else:
+                        pth_path = None
+                    emd["pth_path"] = pth_path
+
+                    self.models.append(emd)
+                except Exception as e:
+                    # For toolbox: be quiet, but you could log if needed
+                    print(f"Error parsing EMD {emd_path}: {e}")
+        return self.models
+
+    # ---- Query functions ----
+
+    def list_tasks(self):
+        """All unique task strings (as in emd['Task'])."""
+        return sorted({m.get("Task", "").strip() for m in self.models if "Task" in m})
+
+    def list_architectures(self, task=None):
+        """Unique ModelConfiguration, optionally filtered by task."""
+        if task:
+            archs = {m.get("ModelConfiguration", "").strip()
+                     for m in self.models
+                     if m.get("Task", "").strip() == task}
+        else:
+            archs = {m.get("ModelConfiguration", "").strip()
+                     for m in self.models if "ModelConfiguration" in m}
+        return sorted(a for a in archs if a)
+
+    def list_models(self, task=None, architecture=None):
+        """Return a list of EMD dicts matching optional task & architecture."""
+        result = []
+        for m in self.models:
+            if task and m.get("Task", "").strip() != task:
+                continue
+            if architecture and m.get("ModelConfiguration", "").strip() != architecture:
+                continue
+            result.append(m)
+        return result
+
+    def list_backbones(self, task=None, architecture=None):
+        """Unique ModelBackbone values for given task & architecture."""
+        backs = set()
+        for m in self.models:
+            if task and m.get("Task", "").strip() != task:
+                continue
+            if architecture and m.get("ModelConfiguration", "").strip() != architecture:
+                continue
+            b = m.get("ModelBackbone")
+            if b:
+                backs.add(b)
+        return sorted(backs)
+
+    def get_classes(self, model_emd):
+        """Return class names from EMD['Classes']."""
+        classes = model_emd.get("Classes", [])
+        names = []
+        for c in classes:
+            name = c.get("Name")
+            if isinstance(name, str):
+                names.append(name)
+        return names
+
+    def get_image_size(self, model_emd):
+        """Get image size (height) from EMD, default 512."""
+        return int(model_emd.get("ImageHeight", 512))
+
+    def get_extract_bands(self, model_emd):
+        """Return ExtractBands list (1-based indices) or None."""
+        bands = model_emd.get("ExtractBands")
+        if isinstance(bands, list) and bands:
+            return [int(b) for b in bands]
+        return None
+
+    def get_pth_path(self, model_emd):
+        return model_emd.get("pth_path")
+
+# ------------------------------------------------------------------------------
+# EMD parsing helpers
+# ------------------------------------------------------------------------------
+
+def _clean_emd_json(text: str) -> str:
+    """Clean EMD text into valid JSON:
+    - Remove comments
+    - Remove trailing commas
+    - Fix missing commas between JSON string pairs
+    """
+
+    # Remove single-line // comments
+    text = re.sub(r'//.*', '', text)
+    # Remove /* ... */ comments
+    text = re.sub(r'/\*[\s\S]*?\*/', '', text)
+
+    # Remove trailing commas before ] or }
+    text = re.sub(r',\s*(\]|\})', r'\1', text)
+
+    # Fix missing commas between JSON string pairs:
+    #   "key": "value"  "next": "value"
+    # -> "key": "value", "next": "value"
+    text = re.sub(r'\"(\s*:\s*\"[^\"]*\"\s*)\"', r'\1, \"', text)
+
+    return text
+
+
+def load_emd(path: str) -> dict:
+    """Load an EMD file into a Python dict (robust to ESRI quirks)."""
+    with open(path, "r", encoding="utf-8") as f:
+        raw = f.read()
+    cleaned = _clean_emd_json(raw)
+    return json.loads(cleaned)
+
+# ------------------------------------------------------------------------------
+# Toolbox
+# ------------------------------------------------------------------------------
 
 class Toolbox(object):
     def __init__(self):
         self.label = "Semantic Segmentation"
-        self.alias = "semantic segmentation toolbox"
+        self.alias = "semantic_segmentation_toolbox"
         self.tools = [
             Classify,
             ModelInfo,
             ValidateModel
         ]
 
+# ------------------------------------------------------------------------------
+# Classify Tool (main raster classification)
+# ------------------------------------------------------------------------------
+
 class Classify(object):
     """Main classification tool for raster processing"""
-    
+
     def __init__(self):
         self.label = "Classify Raster"
         self.description = "Perform semantic segmentation on a raster using a trained model"
         self.canRunInBackground = False
-        # Define supported models and their configurations
-        self.model_configs = MODEL_CONFIGS
-        
-    def _grab_and_parse_emds(self, task, arch, directory_path):
-                """Grabs all .emd files in the mangrove_classifier folder and extracts the corresponding .pth files for models acceptable for the current classification task."""
-            
-                directory_path = directory_path
-                file_list = []
-                emd_file_count = 0
-                task_dict = {'Mangroves': 'mangrove',
-                                'Human Infrastructure': 'human'}
-                arch_dict = {'ResUNet': 'ResNetUNet',
-                                'SegFormer': 'SegFormer'}
-            
-                for root, dirs, files in os.walk(directory_path):
-                    for file in files:
-                        file_path = os.path.join(root, file)
-                        if file_path.split('.')[-1] == 'emd':
-                            emd_file_count += 1
-                            # Read file
-                            try:    
-                                with open(file_path, 'r', encoding='utf-8') as f:
-                                    s = f.read()
-                                    s = re.sub(r',\s*(\]|})', r'\1', s)
-                                    
-                            except IOError as exc:
-                                return [f"Error reading file {file_path.name}: {exc}"]
 
-                            json_string = json.loads(s)
-                            
-                            #Parse if file is appropriate for task/arch
-                            is_appropriate_task = any([task_dict[task] in pair["Name"].lower() for pair in json_string["Classes"]])
-                            
-                            # file_list.append(f"Is appropriate?: {[task_dict[task] in pair["Name"].lower() for pair in json_string["Classes"]]}")
-                            
-                            is_appropriate_arch = json_string["ModelConfiguration"] == arch_dict[arch]
-                            
-                            # file_list.append(f"Is appropriate arch?: {json_string["Classes"] == arch_dict[arch]}")
-                            
-                            if (is_appropriate_task and is_appropriate_arch):
-                                file_list.append(json_string["ModelFile"])
-                                
-                            # file_list.append(file)
-                file_list = sorted(file_list) 
-                if len(file_list) == 0: 
-                    if emd_file_count < 1:
-                        file_list = ['No models found. Check model folder.']
-                    else:
-                        file_list = ['No models found. Change task/architecture.']
-                return file_list
+        # Dynamic registry of models from EMDs
+        self.registry = ModelRegistry()
 
+    # ------------------------------------------------------------------
+    # Parameter definitions
+    # ------------------------------------------------------------------
     def getParameterInfo(self):
         """Define the tool parameters."""
         params = []
-        
-        # Folder Containing Models Selection
-        params.append(arcpy.Parameter(
+
+        # 0. Folder Containing Models
+        p_model_folder = arcpy.Parameter(
             displayName="Folder Containing Models",
             name="model_folder",
             datatype="DEFolder",
             parameterType="Required",
-            direction="Input"))
-        params[0].value = "."
-        
-        # Model Task Selection
-        params.append(arcpy.Parameter(
+            direction="Input"
+        )
+        p_model_folder.value = TOOLBOX_DIR  # default to toolbox dir
+        params.append(p_model_folder)
+
+        # 1. Model Task (from EMD["Task"])
+        p_task = arcpy.Parameter(
             displayName="Model Task",
             name="model_task",
             datatype="GPString",
             parameterType="Required",
-            direction="Input"))
-        params[1].filter.type = "ValueList"
-        params[1].filter.list = ["Mangroves", "Human Infrastructure"]
-        params[1].value = "Mangroves"
-        
-        # Model Architecture Selection
-        params.append(arcpy.Parameter(
+            direction="Input"
+        )
+        p_task.filter.type = "ValueList"
+        p_task.filter.list = []
+        params.append(p_task)
+
+        # 2. Model Architecture (from EMD["ModelConfiguration"])
+        p_arch = arcpy.Parameter(
             displayName="Model Architecture",
             name="model_architecture",
             datatype="GPString",
             parameterType="Required",
-            direction="Input"))
-        params[2].filter.type = "ValueList"
-        params[2].filter.list = list(self.model_configs.keys())
-        params[2].value = "SegFormer"
-        
-        # Model File
-        params.append(arcpy.Parameter(
+            direction="Input"
+        )
+        p_arch.filter.type = "ValueList"
+        p_arch.filter.list = []
+        params.append(p_arch)
+
+        # 3. Model File (.pth) (from EMD["ModelFile"])
+        p_model_file = arcpy.Parameter(
             displayName="Trained Model File (.pth)",
             name="model_file",
             datatype="GPString",
             parameterType="Required",
-            direction="Input"))
-        # Populate initial list of .pth files from default model folder
-        
-        try:
-            default_task = params[1].value 
-            default_arch = params[2].value 
-            initial_files = []
-        
-            initial_files = self._grab_and_parse_emds(default_task, default_arch, params[0].valueAsText)
-        
-        except Exception:
-            initial_files = ['Error: files were not gathered.']
-            
-        params[3].filter.type = "ValueList"
-        params[3].filter.list = initial_files
-        params[3].value = initial_files[0] if initial_files else None
-        
-        # Input Raster
-        params.append(arcpy.Parameter(
+            direction="Input"
+        )
+        p_model_file.filter.type = "ValueList"
+        p_model_file.filter.list = []
+        params.append(p_model_file)
+
+        # 4. Input Raster
+        p_in_raster = arcpy.Parameter(
             displayName="Input Raster",
             name="input_raster",
             datatype="GPRasterLayer",
             parameterType="Required",
-            direction="Input"))
-        
-        # Output Raster
-        params.append(arcpy.Parameter(
+            direction="Input"
+        )
+        params.append(p_in_raster)
+
+        # 5. Output Raster
+        p_out_raster = arcpy.Parameter(
             displayName="Output Classified Raster (.tif or geodatabase)",
             name="output_raster",
             datatype="DERasterDataset",
             parameterType="Required",
-            direction="Output"))
-        
-        # Processing Options Category
-        params.append(arcpy.Parameter(
+            direction="Output"
+        )
+        params.append(p_out_raster)
+
+        # --- Processing Options Category ---
+
+        # 6. Tile Size
+        p_tile_size = arcpy.Parameter(
             displayName="Tile Size (pixels)",
             name="tile_size",
             datatype="GPLong",
             parameterType="Optional",
-            direction="Input"))
-        params[6].value = 512
-        params[6].category = "Processing Options"
-        
-        params.append(arcpy.Parameter(
+            direction="Input"
+        )
+        p_tile_size.value = 512
+        p_tile_size.category = "Processing Options"
+        params.append(p_tile_size)
+
+        # 7. Tile Overlap
+        p_tile_overlap = arcpy.Parameter(
             displayName="Tile Overlap (pixels)",
             name="tile_overlap",
             datatype="GPLong",
             parameterType="Optional",
-            direction="Input"))
-        params[7].value = 64
-        params[7].category = "Processing Options"
-        
-        params.append(arcpy.Parameter(
+            direction="Input"
+        )
+        p_tile_overlap.value = 64
+        p_tile_overlap.category = "Processing Options"
+        params.append(p_tile_overlap)
+
+        # 8. Batch Size
+        p_batch = arcpy.Parameter(
             displayName="Batch Size",
             name="batch_size",
             datatype="GPLong",
             parameterType="Optional",
-            direction="Input"))
-        params[8].value = 8
-        params[8].filter.type = "Range"
-        params[8].filter.list = [1, 64]
-        params[8].category = "Processing Options"
+            direction="Input"
+        )
+        p_batch.value = 8
+        p_batch.filter.type = "Range"
+        p_batch.filter.list = [1, 64]
+        p_batch.category = "Processing Options"
+        params.append(p_batch)
+
+        # 9. TTA
+        p_tta = arcpy.Parameter(
+            displayName="TTA (Test Time Augmentation)",
+            name="tta_enabled",
+            datatype="GPBoolean",
+            parameterType="Optional",
+            direction="Input"
+        )
+        p_tta.value = False
+        p_tta.category = "Processing Options"
+        params.append(p_tta)
+
         
-        # Use GPU
-        params.append(arcpy.Parameter(
+
+        # 10. Use GPU
+        p_use_gpu = arcpy.Parameter(
             displayName="Use GPU if available",
             name="use_gpu",
             datatype="GPBoolean",
             parameterType="Optional",
-            direction="Input"))
-        params[9].value = True
-        params[9].category = "Processing Options"
+            direction="Input"
+        )
+        p_use_gpu.value = True
+        p_use_gpu.category = "Processing Options"
+        params.append(p_use_gpu)
 
-        # Model Configuration Category
-        params.append(arcpy.Parameter(
+        # --- Model Configuration Category ---
+
+        # 11. Pretrained Backbone (from EMD["ModelBackbone"])
+        p_backbone = arcpy.Parameter(
             displayName="Pretrained Backbone",
             name="pretrained_backbone",
             datatype="GPString",
             parameterType="Optional",
-            direction="Input"))
-        params[10].filter.type = "ValueList"
-        params[10].value = None  # Default will be set dynamically
-        params[10].filter.list = []  # Will be populated dynamically
-        params[10].category = "Model Configuration"
-        
-        # Output Configuration Category
-        params.append(arcpy.Parameter(
+            direction="Input"
+        )
+        p_backbone.filter.type = "ValueList"
+        p_backbone.filter.list = []
+        p_backbone.value = None
+        p_backbone.category = "Model Configuration"
+        params.append(p_backbone)
+
+        # --- Output Configuration Category ---
+
+        # 12. Class Names
+        p_class_names = arcpy.Parameter(
             displayName="Class Names (comma-separated)",
             name="class_names",
             datatype="GPString",
             parameterType="Optional",
-            direction="Input"))
-        params[11].value = "Human Artifact,Vegetation,Building,Car,Low Vegetation,Road"
-        params[11].category = "Output Configuration"
-        
-        # NoData Value
-        params.append(arcpy.Parameter(
+            direction="Input"
+        )
+        p_class_names.category = "Output Configuration"
+        params.append(p_class_names)
+
+        # 13. NoData Value
+        p_nodata = arcpy.Parameter(
             displayName="NoData Value",
             name="nodata_value",
             datatype="GPLong",
             parameterType="Optional",
-            direction="Input"))
-        params[12].value = 255
-        params[12].category = "Output Configuration"
-        
-        # CHANGED 
-        # TEST OPTION A
-        # params.append(arcpy.Parameter(
-        #     displayName="TEST A (folder)",
-        #     name="test_a",
-        #     datatype="DEFolder",
-        #     parameterType="Optional",
-        #     direction="Input"))
-        
-        # # TEST OPTION B 
-        # params.append(arcpy.Parameter(
-        #     displayName="Model (.pth)",
-        #     name="Model",
-        #     datatype="DEFile",
-        #     parameterType="Required",
-        #     direction="Input"))
-        # params[11].filter.type = "ValueList"
-        # # params[0].filter.list = list(self.model_configs.keys())
-        # params[11].filter.list = ['pth', 'pt']
-        
+            direction="Input"
+        )
+        p_nodata.value = 255
+        p_nodata.category = "Output Configuration"
+        params.append(p_nodata)
+
+        # 14. Threshold
+        p_threshold = arcpy.Parameter(
+            displayName="Threshold",
+            name="threshold",
+            datatype="GPDouble",
+            parameterType="Optional",
+            direction="Input"
+        )
+        p_threshold.value = 0.5
+        p_threshold.category = "Output Configuration"
+        params.append(p_threshold)
+
+        # Initial attempt to populate lists from toolbox dir
+        try:
+            folder = p_model_folder.valueAsText or TOOLBOX_DIR
+            self.registry.scan_folder(folder)
+            tasks = self.registry.list_tasks()
+            p_task.filter.list = tasks
+            if tasks:
+                p_task.value = tasks[0]
+
+            archs = self.registry.list_architectures(task=p_task.valueAsText) if tasks else []
+            p_arch.filter.list = archs
+            if archs:
+                p_arch.value = archs[0]
+
+            models_emd = self.registry.list_models(task=p_task.valueAsText, architecture=p_arch.valueAsText) if archs else []
+            model_files = [m.get("ModelFile") for m in models_emd if m.get("ModelFile")]
+            p_model_file.filter.list = model_files
+            if model_files:
+                p_model_file.value = model_files[0]
+
+            if models_emd:
+                first_model = models_emd[0]
+                # Classes
+                cls = self.registry.get_classes(first_model)
+                if cls:
+                    p_class_names.value = ",".join(cls)
+                # Tile size
+                p_tile_size.value = self.registry.get_image_size(first_model)
+                # Backbones
+                backs = self.registry.list_backbones(p_task.valueAsText, p_arch.valueAsText)
+                p_backbone.filter.list = backs
+                if backs:
+                    p_backbone.value = backs[0]
+        except Exception:
+            # Don't crash toolbox at definition time
+            pass
+
         return params
 
+    # ------------------------------------------------------------------
     def isLicensed(self):
-        """Set whether the tool is licensed to execute."""
         return True
 
+    # ------------------------------------------------------------------
     def updateParameters(self, parameters):
-        """Update parameters dynamically based on model selection"""
-        
-        
-        # When model folder changes, refresh available model files.
-        if parameters[0].altered:
+        """Update parameters dynamically based on folder / task / architecture selection."""
+        p_folder = parameters[0]
+        p_task = parameters[1]
+        p_arch = parameters[2]
+        p_model_file = parameters[3]
+        p_tile_size = parameters[6]
+        p_batch = parameters[8]
+        p_backbone = parameters[11]
+        p_class_names = parameters[12]
+
+        # Helper: refresh registry from folder
+        def refresh_registry():
+            folder = p_folder.valueAsText
+            if folder:
+                self.registry.scan_folder(folder)
+            else:
+                self.registry.models = []
+
+        # 1. Folder changed -> rescan, update tasks, archs, model files, backbones, classes
+        if p_folder.altered:
             try:
-                task_value = parameters[1].valueAsText or parameters[1].value
-                arch_value = parameters[2].valueAsText or parameters[2].value
-                model_files = self._grab_and_parse_emds(task_value, arch_value, parameters[0].valueAsText)
-                parameters[3].filter.list = model_files
-                cur = parameters[3].value
-                if cur not in model_files:
-                    parameters[3].value = model_files[0] if model_files else None
+                refresh_registry()
+                tasks = self.registry.list_tasks()
+                p_task.filter.list = tasks
+                if tasks:
+                    if p_task.valueAsText not in tasks:
+                        p_task.value = tasks[0]
+                else:
+                    p_task.value = None
+
+                archs = self.registry.list_architectures(p_task.valueAsText) if p_task.valueAsText else []
+                p_arch.filter.list = archs
+                if archs:
+                    if p_arch.valueAsText not in archs:
+                        p_arch.value = archs[0]
+                else:
+                    p_arch.value = None
+
+                models_emd = self.registry.list_models(
+                    p_task.valueAsText,
+                    p_arch.valueAsText
+                )
+                model_files = [m.get("ModelFile") for m in models_emd if m.get("ModelFile")]
+                p_model_file.filter.list = model_files
+                if model_files and p_model_file.valueAsText not in model_files:
+                    p_model_file.value = model_files[0]
+
+                if models_emd:
+                    first_model = models_emd[0]
+                    # Update classes if user hasn't edited
+                    cls = self.registry.get_classes(first_model)
+                    p_class_names.value = ",".join(cls)
+                    # Update tile size if user hasn't edited
+                    if not p_tile_size.altered:
+                        p_tile_size.value = self.registry.get_image_size(first_model)
+                    # Update backbones
+                    backs = self.registry.list_backbones(p_task.valueAsText, p_arch.valueAsText)
+                    p_backbone.filter.list = backs
+                    if backs and p_backbone.valueAsText not in backs:
+                        p_backbone.value = backs[0]
+                else:
+                    p_backbone.filter.list = []
+                    if not p_backbone.altered:
+                        p_backbone.value = None
             except Exception:
                 pass
-        
-        
-        # When model task changes, refresh available model files.
-        if parameters[1].altered:
+
+        # 2. Task changed -> refresh archs, model files, backbones, classes
+        if p_task.altered and not p_folder.altered:
             try:
-                task_value = parameters[1].valueAsText or parameters[1].value
-                arch_value = parameters[2].valueAsText or parameters[2].value
-                model_files = self._grab_and_parse_emds(task_value, arch_value, parameters[0].valueAsText)
-                parameters[3].filter.list = model_files
-                cur = parameters[3].value
-                if cur not in model_files:
-                    parameters[3].value = model_files[0] if model_files else None
+                refresh_registry()
+                archs = self.registry.list_architectures(p_task.valueAsText)
+                p_arch.filter.list = archs
+                if archs:
+                    if p_arch.valueAsText not in archs:
+                        p_arch.value = archs[0]
+                else:
+                    p_arch.value = None
+
+                models_emd = self.registry.list_models(
+                    p_task.valueAsText,
+                    p_arch.valueAsText
+                )
+                model_files = [m.get("ModelFile") for m in models_emd if m.get("ModelFile")]
+                p_model_file.filter.list = model_files
+                if model_files and p_model_file.valueAsText not in model_files:
+                    p_model_file.value = model_files[0]
+
+                if models_emd:
+                    first_model = models_emd[0]
+                    cls = self.registry.get_classes(first_model)
+                    p_class_names.value = ",".join(cls)
+                    if not p_tile_size.altered:
+                        p_tile_size.value = self.registry.get_image_size(first_model)
+                    backs = self.registry.list_backbones(p_task.valueAsText, p_arch.valueAsText)
+                    p_backbone.filter.list = backs
+                    if backs and p_backbone.valueAsText not in backs:
+                        p_backbone.value = backs[0]
+                else:
+                    p_backbone.filter.list = []
+                    if not p_backbone.altered:
+                        p_backbone.value = None
             except Exception:
                 pass
-        
-        
-        # When model architecture changes, update related parameters
-        if parameters[2].altered:
-            model_name = parameters[2].valueAsText
-            
-            if model_name in self.model_configs:
-                config = self.model_configs[model_name]
-                
-                # Update available model files
-                try:
-                    task_value = parameters[1].valueAsText or parameters[1].value
-                    arch_value = parameters[2].valueAsText or parameters[2].value
-                    model_files = self._grab_and_parse_emds(task_value, arch_value, parameters[0].valueAsText)
-                    parameters[3].filter.list = model_files
-                    cur = parameters[3].value
-                    if cur not in model_files:
-                        parameters[3].value = model_files[0] if model_files else None
-                except Exception:
-                    pass
-                
-                # Update pretrained backbone dropdown options
-                parameters[10].filter.list = config["backbone_options"]
 
-                # Set default backbone if current value not in new list
-                if parameters[10].value not in config["backbone_options"]:
-                    parameters[10].value = config["default_backbone"]
+        # 3. Architecture changed -> refresh model files, backbones, classes, tile size
+        if p_arch.altered and not p_folder.altered:
+            try:
+                refresh_registry()
+                models_emd = self.registry.list_models(
+                    p_task.valueAsText,
+                    p_arch.valueAsText
+                )
+                model_files = [m.get("ModelFile") for m in models_emd if m.get("ModelFile")]
+                p_model_file.filter.list = model_files
+                if model_files and p_model_file.valueAsText not in model_files:
+                    p_model_file.value = model_files[0]
 
-                # Update recommended datasizes
-                if not parameters[6].altered:
-                    parameters[6].value = config["recommended_tile_size"]
-                if not parameters[8].altered:
-                    parameters[8].value = config["recommended_batch_size"]
-                    
+                if models_emd:
+                    first_model = models_emd[0]
+                    cls = self.registry.get_classes(first_model)
+                    p_class_names.value = ",".join(cls)
+                    if not p_tile_size.altered:
+                        p_tile_size.value = self.registry.get_image_size(first_model)
+                    backs = self.registry.list_backbones(p_task.valueAsText, p_arch.valueAsText)
+                    p_backbone.filter.list = backs
+                    if backs and p_backbone.valueAsText not in backs:
+                        p_backbone.value = backs[0]
+                else:
+                    p_backbone.filter.list = []
+                    if not p_backbone.altered:
+                        p_backbone.value = None
+            except Exception:
+                pass
+
+        # 4. Model file changed -> update classes / tile size / backbone from that specific EMD
+        if p_model_file.altered:
+            try:
+                refresh_registry()
+                models_emd = self.registry.list_models(
+                    p_task.valueAsText,
+                    p_arch.valueAsText
+                )
+                selected = None
+                mf_name = p_model_file.valueAsText
+                for m in models_emd:
+                    if m.get("ModelFile") == mf_name:
+                        selected = m
+                        break
+                if selected:
+                    cls = self.registry.get_classes(selected)
+                    p_class_names.value = ",".join(cls)
+                    if not p_tile_size.altered:
+                        p_tile_size.value = self.registry.get_image_size(selected)
+                    # Backbones for that combo
+                    backs = self.registry.list_backbones(p_task.valueAsText, p_arch.valueAsText)
+                    p_backbone.filter.list = backs
+                    if backs and not p_backbone.altered:
+                        default_backbone = selected.get("ModelBackbone", backs[0])
+                        if default_backbone in backs:
+                            p_backbone.value = default_backbone
+                        else:
+                            p_backbone.value = backs[0]
+            except Exception:
+                pass
+
         return
 
+    # ------------------------------------------------------------------
     def updateMessages(self, parameters):
-        """Validate parameters and provide helpful messages"""
-        if parameters[6].value and parameters[6].value < 128:
-            parameters[6].setWarningMessage("Tile size < 128 may produce poor results")
-        if parameters[7].value and parameters[6].value:
-            if parameters[7].value >= parameters[6].value / 2:
-                parameters[7].setErrorMessage("Overlap must be less than half the tile size")
+        """Validate parameters and provide helpful messages."""
+        p_tile_size = parameters[6]
+        p_overlap = parameters[7]
+
+        if p_tile_size.value and p_tile_size.value < 128:
+            p_tile_size.setWarningMessage("Tile size < 128 may produce poor results")
+        if p_overlap.value and p_tile_size.value:
+            if p_overlap.value >= p_tile_size.value / 2:
+                p_overlap.setErrorMessage("Overlap must be less than half the tile size")
         return
 
+    # ------------------------------------------------------------------
     def execute(self, parameters, messages):
         model = None
-        """The source code of the tool."""
         try:
             import torch
-            import gc
-            # Get parameters
-            # CHANGED WAS ORIGINALLY 0-8
+            import numpy as np
+            from osgeo import gdal, gdalconst  # type: ignore
+
+            # Read parameters
             model_folder_directory = parameters[0].valueAsText
+            model_task = parameters[1].valueAsText
             model_architecture = parameters[2].valueAsText
-            model_file = os.path.join(model_folder_directory, parameters[3].valueAsText)
+            model_file_name = parameters[3].valueAsText
             input_raster = parameters[4].valueAsText
             output_raster = parameters[5].valueAsText
             tile_size = parameters[6].value or 512
             tile_overlap = parameters[7].value or 64
             batch_size = parameters[8].value or 4
-            use_gpu = parameters[9].value
-            backbone = parameters[10].valueAsText
-            class_names = [c.strip() for c in parameters[11].valueAsText.split(',')]
-            nodata_value = parameters[12].value or 255
-            
+            tta = parameters[9].value or False
+            use_gpu = parameters[10].value
+            backbone_param = parameters[11].valueAsText
+            user_class_names_str = parameters[12].valueAsText
+            nodata_value = parameters[13].value or 255
+            threshold = parameters[14].value or 0.5
+
             arcpy.AddMessage("=" * 80)
             arcpy.AddMessage("Semantic Segmentation Tool")
             arcpy.AddMessage("=" * 80)
+            arcpy.AddMessage(f"Model Task: {model_task}")
             arcpy.AddMessage(f"Model Architecture: {model_architecture}")
-            
-            # Validate model architecture
-            if model_architecture not in self.model_configs:
-                arcpy.AddError(f"Unsupported model architecture: {model_architecture}")
-                return
-            
-            # Validate inputs
+            arcpy.AddMessage(f"Selected Model: {model_file_name}")
+
+            # Validate paths
             if not os.path.exists(input_raster):
                 arcpy.AddError(f"Input raster not found: {input_raster}")
                 return
-            if not os.path.exists(model_file):
-                arcpy.AddError(f"Model file not found: {model_file}")
+
+            # Refresh registry and locate selected EMD entry
+            self.registry.scan_folder(model_folder_directory)
+            candidates = self.registry.list_models(
+                task=model_task,
+                architecture=model_architecture
+            )
+            selected_emd = None
+            for m in candidates:
+                if m.get("ModelFile") == model_file_name:
+                    selected_emd = m
+                    break
+
+            if not selected_emd:
+                # As fallback, search across all models
+                for m in self.registry.models:
+                    if m.get("ModelFile") == model_file_name:
+                        selected_emd = m
+                        break
+
+            if not selected_emd:
+                arcpy.AddError("Could not find a matching EMD entry for the selected model file.")
                 return
-            
+
+            pth_path = self.registry.get_pth_path(selected_emd)
+            if not pth_path or not os.path.exists(pth_path):
+                arcpy.AddError(f"Model weight file not found: {pth_path}")
+                return
+
+            # Backbone: prefer parameter (user may override), else EMD
+            emd_backbone = selected_emd.get("ModelBackbone")
+            backbone = backbone_param or emd_backbone
+
+            # Classes: if user left default / unmodified, override from EMD
+            emd_classes = self.registry.get_classes(selected_emd)
+            if emd_classes:
+                # If user didn't alter, or appears generic, replace
+                if (user_class_names_str is None or
+                    user_class_names_str.strip() in ("", "Class0,Class1")):
+                    class_names = emd_classes
+                else:
+                    class_names = [c.strip() for c in user_class_names_str.split(",")]
+            else:
+                class_names = [c.strip() for c in user_class_names_str.split(",")]
+
+            # Tile size: if user didn't alter, use EMD height
+            emd_img_size = self.registry.get_image_size(selected_emd)
+            if not parameters[6].altered:
+                tile_size = emd_img_size
+
+            extract_bands = self.registry.get_extract_bands(selected_emd)
+
+            arcpy.AddMessage(f"Backbone: {backbone}")
+            arcpy.AddMessage(f"Model weights: {pth_path}")
+            arcpy.AddMessage(f"Classes: {', '.join(class_names)}")
+            if extract_bands:
+                arcpy.AddMessage(f"Extract bands: {extract_bands}")
+            arcpy.AddMessage(f"Tile size: {tile_size}, overlap: {tile_overlap}, batch size: {batch_size}")
+
             # Setup device
             arcpy.AddMessage("\n[1/5] Setting up compute device...")
             device = self._setup_device(use_gpu, messages)
-            
+
             # Load model
             arcpy.AddMessage("\n[2/5] Loading model...")
             arcpy.AddMessage(f"Architecture: {model_architecture}")
-            arcpy.AddMessage(f"Model file: {model_file}")
-            model_class = self._load_model_class(model_architecture, messages)
-            model = self._build_model(model_class, class_names, tile_size, backbone, model_file, device, messages)
+            arcpy.AddMessage(f"Model file: {pth_path}")
 
-            # Clear memory
+            model_wrapper = self._load_model_class(model_architecture, messages)
+            model = self._build_model(
+                model_wrapper,
+                class_names,
+                tile_size,
+                backbone,
+                pth_path,
+                device,
+                messages
+            )
+
             gc.collect()
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
-            
+
             # Process raster
             arcpy.AddMessage("\n[3/5] Reading input raster...")
             arcpy.AddMessage(f"Input: {input_raster}")
-            
+
             arcpy.AddMessage("\n[4/5] Running semantic segmentation...")
             arcpy.AddMessage(f"Tile size: {tile_size}x{tile_size}")
             arcpy.AddMessage(f"Overlap: {tile_overlap} pixels")
             arcpy.AddMessage(f"Batch size: {batch_size}")
-            
-            self._process_raster(
-                input_raster, output_raster, model_class, model, device,
-                tile_size, tile_overlap, batch_size, nodata_value, messages
+
+            process_raster(input_raster, output_raster,
+                model_wrapper, model, device,
+                tile_size, tile_overlap, batch_size,
+                nodata_value, extract_bands, threshold,
+                tta
             )
-            
+
             arcpy.AddMessage("\n[5/5] Building pyramids and statistics...")
             self._finalize_output(output_raster, class_names, messages)
-            
+
             arcpy.AddMessage("\n" + "=" * 80)
             arcpy.AddMessage("✓ Classification Complete!")
             arcpy.AddMessage(f"Output: {output_raster}")
             arcpy.AddMessage("=" * 80)
-            
+
         except KeyboardInterrupt:
             arcpy.AddWarning("\nProcessing cancelled by user")
-            
+
         except MemoryError:
             arcpy.AddError("\n✗ Out of memory!")
             arcpy.AddError("Try reducing tile_size or batch_size")
-            
+
         except Exception as e:
             arcpy.AddError(f"\n✗ Error: {str(e)}")
             import traceback
             arcpy.AddError(traceback.format_exc())
             raise
-            
+
         finally:
-            # Cleanup
             if model is not None:
                 del model
-            import gc
             gc.collect()
             try:
                 import torch
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
-            except:
+            except Exception:
                 pass
 
+    # ------------------------------------------------------------------
     def _setup_device(self, use_gpu, messages):
-        """Setup compute device (CPU or GPU)"""
         import torch
-        
+
         if use_gpu and torch.cuda.is_available():
             try:
-                # Test if GPU actually works
                 test_tensor = torch.randn(10, 10).cuda()
                 del test_tensor
                 torch.cuda.empty_cache()
-                
+
                 device = torch.device('cuda')
                 arcpy.AddMessage(f"✓ GPU available: {torch.cuda.get_device_name(0)}")
                 arcpy.AddMessage(f"  VRAM: {torch.cuda.get_device_properties(0).total_memory / 1e9:.2f} GB")
-                
-                # Set conservative GPU settings
+
                 torch.backends.cudnn.benchmark = False
                 torch.backends.cudnn.deterministic = True
-                
+
             except Exception as e:
                 arcpy.AddWarning(f"GPU test failed: {e}")
                 arcpy.AddWarning("Falling back to CPU mode")
@@ -503,25 +1246,17 @@ class Classify(object):
             if use_gpu and not torch.cuda.is_available():
                 arcpy.AddWarning("GPU requested but not available, using CPU")
             else:
-                arcpy.AddMessage("✓ Using CPU for processing (recommended)")
-        
+                arcpy.AddMessage("✓ Using CPU for processing")
         return device
 
     def _load_model_class(self, model_architecture, messages) -> ModelClass:
-        """Load the model based on architecture"""
+        """Load model wrapper class based on ModelConfiguration name."""
         try:
-            # Get model class dynamically
-            config = self.model_configs[model_architecture]
-            model_class_name = config["class_name"]
-            
-            # Get the model class from models module
-            try:
-                modelclass = getattr(models, model_class_name)
-            except AttributeError:
-                raise ImportError(f"Model class '{model_class_name}' not found in models module")
-            
-            # Initialize model wrapper
-            model_wrapper = modelclass()
+            if model_architecture not in model_class_names:
+                raise ImportError(f"Model class '{model_architecture}' not found in ModelClasses module")
+
+            wrapper_class = getattr(models, model_architecture)
+            model_wrapper = wrapper_class()
             return model_wrapper
 
         except Exception as e:
@@ -530,210 +1265,78 @@ class Classify(object):
             arcpy.AddError(traceback.format_exc())
             raise
 
-    def _build_model(self, model_class: ModelClass, class_names, img_size, backbone, weights, device, messages) -> torch.nn.Module:
+    # ------------------------------------------------------------------
+    def _build_model(self, model_class: ModelClass, class_names, img_size,
+                     backbone, weights, device, messages):
+        import torch
+        import numpy as np
+
         arcpy.AddMessage("  Building model ...")
-        
-        # Create dummy data object
+
         class DummyDataset:
             def __init__(self, img_size):
-                self.dummy_img = np.zeros((3, img_size, img_size), dtype=np.float32)  
+                self.dummy_img = np.zeros((3, img_size, img_size), dtype=np.float32)
             def __getitem__(self, idx):
                 return (torch.from_numpy(self.dummy_img), None)
+
         class DummyData:
             def __init__(self, classes, img_size=512):
                 self.classes = classes
                 self.train_ds = DummyDataset(img_size)
-        
+
         try:
-            # Get model architecture
-            dummy_data = DummyData(class_names, img_size=img_size)
-            model = model_class.get_model(dummy_data, backbone=backbone, state_dict=weights)
+            model = model_class.get_model(backbone=backbone, state_dict=weights, image_size=img_size, num_classes=len(class_names))
         except Exception as e:
             arcpy.AddError(f"Failed to build model: {str(e)}")
             import traceback
             arcpy.AddError(traceback.format_exc())
             raise
-        
-        del dummy_data
+
         gc.collect()
-        
+
         arcpy.AddMessage("  Moving model to device...")
         model = model.to(device)
         model.eval()
-        for param in model.parameters():
-            param.requires_grad = False
-        
-        arcpy.AddMessage(f"✓ Model loaded successfully")
+        for p in model.parameters():
+            p.requires_grad = False
+
+        arcpy.AddMessage("✓ Model loaded successfully")
         arcpy.AddMessage(f"  Classes: {', '.join(class_names)}")
         arcpy.AddMessage(f"  Device: {device}")
-        
+
         try:
             total_params = sum(p.numel() for p in model.parameters())
             arcpy.AddMessage(f"  Parameters: {total_params:,}")
-        except:
+        except Exception:
             pass
 
         return model
 
-    def _process_raster(self, input_path, output_path, model_class: ModelClass, model: torch.nn.Module, device: torch.device,
-                       tile_size: int, overlap: int, batch_size: int, nodata_value, messages):
-        """Process raster with tiling"""
-        import torch
-        from osgeo import gdal, gdalconst # type: ignore
-        import numpy as np
-        import gc
-        import tempfile
-        import os
-        
-        # Check if output is geodatabase
-        is_gdb = '.gdb' in output_path.lower() or '.sde' in output_path.lower()
-        
-        # If geodatabase, create temporary GeoTIFF first
-        if is_gdb:
-            temp_dir = tempfile.gettempdir()
-            temp_output = os.path.join(temp_dir, "temp_output.tif")
-            arcpy.AddMessage(f"  Creating temporary file: {temp_output}")
-            actual_output = temp_output
-        else:
-            actual_output = output_path
-        
-        # Open input
-        src_ds = gdal.Open(input_path, gdalconst.GA_ReadOnly)
-        if src_ds is None:
-            raise ValueError(f"Cannot open raster: {input_path}")
-        
-        width = src_ds.RasterXSize
-        height = src_ds.RasterYSize
-        n_bands = min(src_ds.RasterCount, 3)
-        
-        arcpy.AddMessage(f"  Size: {width} x {height} pixels")
-        arcpy.AddMessage(f"  Bands: {n_bands}")
-        
-        # Create output
-        driver = gdal.GetDriverByName('GTiff')
-        dst_ds = driver.Create(
-            actual_output, width, height, 1, gdal.GDT_Byte,
-            options=['COMPRESS=LZW', 'TILED=YES', 'BIGTIFF=IF_SAFER']
-        )
-        dst_ds.SetGeoTransform(src_ds.GetGeoTransform())
-        dst_ds.SetProjection(src_ds.GetProjection())
-        dst_band = dst_ds.GetRasterBand(1)
-        dst_band.SetNoDataValue(nodata_value)
-        
-        # Calculate tiles
-        stride = tile_size - overlap
-        n_tiles_x = int(np.ceil(width / stride))
-        n_tiles_y = int(np.ceil(height / stride))
-        total_tiles = n_tiles_x * n_tiles_y
-        
-        arcpy.AddMessage(f"  Processing {total_tiles} tiles ({n_tiles_x} x {n_tiles_y})")
-        arcpy.SetProgressor("step", "Processing tiles...", 0, total_tiles, 1)
-        
-        processed = 0
-        
-        # Process tiles
-        for tile_idx in range(total_tiles):
-            try:
-                ty = tile_idx // n_tiles_x
-                tx = tile_idx % n_tiles_x
-                
-                x_off = tx * stride
-                y_off = ty * stride
-                x_size = min(tile_size, width - x_off)
-                y_size = min(tile_size, height - y_off)
-                
-                # Read tile
-                tile_data = np.zeros((n_bands, tile_size, tile_size), dtype=np.float32)
-                for b in range(n_bands):
-                    band = src_ds.GetRasterBand(b + 1)
-                    data = band.ReadAsArray(x_off, y_off, x_size, y_size)
-                    if data is not None:
-                        tile_data[b, :y_size, :x_size] = data
-                
-                # Process tile
-                tile_tensor = torch.from_numpy(tile_data).float()
-                tile_tensor = model_class.transform_input(tile_tensor).to(device)
-
-                with torch.no_grad():
-                    output = model.forward(tile_tensor)
-                    prediction = model_class.post_process(output)
-
-                # Extract valid region
-                pred = prediction[0, :y_size, :x_size]
-                
-                # Write result
-                pred = pred.squeeze(0) if pred.dim() == 3 else pred
-                pred = pred.cpu().numpy().astype(np.uint8)
-                dst_band.WriteArray(pred, x_off, y_off)
-                processed += 1
-                
-                # Cleanup
-                del tile_tensor, output, prediction, pred
-                if processed % 50 == 0:
-                        gc.collect()
-                        if torch.cuda.is_available():
-                            torch.cuda.empty_cache()
-
-                # Update progress
-                if processed % 10 == 0:
-                    arcpy.SetProgressorPosition(processed)
-                    arcpy.AddMessage(f"  Progress: {processed}/{total_tiles} tiles ({100*processed/total_tiles:.1f}%)")
-          
-            except Exception as e:
-                arcpy.AddWarning(f"  Failed to process tile {tile_idx}: {e}")
-                failed_tile = np.full((y_size, x_size), nodata_value, dtype=np.uint8)
-                dst_band.WriteArray(failed_tile, x_off, y_off)
-                processed += 1
-        
-        # Cleanup and close files
-        arcpy.ResetProgressor()
-        dst_band.FlushCache()
-        dst_ds.FlushCache()
-        dst_band = None
-        dst_ds = None
-        src_ds = None
-        
-        arcpy.AddMessage(f"✓ Processed {total_tiles} tiles")
-        
-        # If geodatabase output, copy temp file
-        if is_gdb:
-            arcpy.AddMessage(f"  Copying to geodatabase...")
-            try:
-                arcpy.management.CopyRaster(
-                    temp_output,
-                    output_path,
-                    pixel_type="8_BIT_UNSIGNED",
-                    nodata_value=nodata_value
-                )
-                arcpy.AddMessage(f"✓ Saved to geodatabase: {output_path}")
-                
-                # Clean up temp file
-                try:
-                    os.remove(temp_output)
-                except:
-                    pass
-                    
-            except Exception as e:
-                arcpy.AddError(f"Failed to save to geodatabase: {e}")
-                arcpy.AddError(f"Temporary output saved at: {temp_output}")
-                raise
-        
-        gc.collect()
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-
     def _finalize_output(self, output_path, class_names, messages):
-        # TODO: Add class names to raster attribute table
-        """Build pyramids and statistics"""
+        """Build pyramids, statistics, and RAT if possible."""
+        try:
+            classnames = ",".join(class_names)               # ["No Mangrove","Mangrove"]
+            classcodes = ",".join(str(i) for i in range(len(class_names)))
+
+            arcpy.AddMessage("✓ Writing class metadata to raster...")
+
+            arcpy.management.SetRasterProperties(
+                output_path,
+                classnames=classnames,
+                classcodes=classcodes
+            )
+
+        except Exception as e:
+            arcpy.AddWarning(f"⚠ Failed to write class metadata: {e}")
         try:
             is_gdb = '.gdb' in output_path.lower() or '.sde' in output_path.lower()
-            
+
             if is_gdb:
                 arcpy.AddMessage("✓ Output saved to geodatabase")
                 try:
                     arcpy.management.CalculateStatistics(output_path)
                     arcpy.AddMessage("✓ Calculated statistics")
-                except:
+                except Exception:
                     arcpy.AddMessage("  (Statistics will be calculated on first display)")
             else:
                 try:
@@ -741,231 +1344,271 @@ class Classify(object):
                     arcpy.AddMessage("✓ Built pyramids")
                 except Exception as e:
                     arcpy.AddMessage(f"  Could not build pyramids: {e}")
-                
+
                 try:
                     arcpy.management.CalculateStatistics(output_path)
                     arcpy.AddMessage("✓ Calculated statistics")
                 except Exception as e:
                     arcpy.AddMessage(f"  Could not calculate statistics: {e}")
-            
+
             try:
                 arcpy.management.BuildRasterAttributeTable(output_path, "Overwrite")
                 arcpy.AddMessage("✓ Built raster attribute table")
             except Exception as e:
                 arcpy.AddMessage(f"  Could not build attribute table: {e}")
-                
+
         except Exception as e:
             arcpy.AddWarning(f"Post-processing warning: {e}")
             arcpy.AddMessage("  Classification completed successfully despite post-processing issues")
 
+# ------------------------------------------------------------------------------
+# ModelInfo Tool (basic pth inspection)
+# ------------------------------------------------------------------------------
+
 class ModelInfo(object):
     """Tool to inspect model information"""
-    
+
     def __init__(self):
         self.label = "Inspect Model Information"
         self.description = "Display information about a trained model"
         self.canRunInBackground = False
-        self.model_configs = MODEL_CONFIGS
 
     def getParameterInfo(self):
         params = []
-        
-        params.append(arcpy.Parameter(
+
+        p_model_file = arcpy.Parameter(
             displayName="Model File (.pth)",
             name="model_file",
             datatype="DEFile",
             parameterType="Required",
-            direction="Input"))
-        params[0].filter.list = ['pth', 'pt']
-        
+            direction="Input"
+        )
+        p_model_file.filter.list = ['pth', 'pt']
+        params.append(p_model_file)
+
         return params
 
     def execute(self, parameters, messages):
         try:
             import torch
-            
+
             model_file = parameters[0].valueAsText
-            
+
             arcpy.AddMessage("=" * 80)
             arcpy.AddMessage("Model Information")
             arcpy.AddMessage("=" * 80)
             arcpy.AddMessage(f"\nModel File: {model_file}")
             arcpy.AddMessage(f"File Size: {os.path.getsize(model_file) / 1e6:.2f} MB")
-            
+
             checkpoint = torch.load(model_file, map_location='cpu')
-            
+
             arcpy.AddMessage("\nCheckpoint Contents:")
             if isinstance(checkpoint, dict):
                 for key in checkpoint.keys():
                     if key != 'state_dict':
                         arcpy.AddMessage(f"  - {key}")
-                
+
                 if 'state_dict' in checkpoint:
                     state_dict = checkpoint['state_dict']
                 elif 'model_state_dict' in checkpoint:
                     state_dict = checkpoint['model_state_dict']
                 else:
                     state_dict = checkpoint
-                
+
                 total_params = sum(p.numel() for p in state_dict.values())
                 arcpy.AddMessage(f"\nTotal Parameters: {total_params:,}")
-                
+
                 for key in state_dict.keys():
                     if 'classifier' in key and 'weight' in key:
                         num_classes = state_dict[key].shape[0]
-                        arcpy.AddMessage(f"Number of Classes: {num_classes}")
+                        arcpy.AddMessage(f"Number of Classes (from classifier): {num_classes}")
                         break
-                
-                arcpy.AddMessage("\nModel Layers:")
+
+                arcpy.AddMessage("\nModel Layers (top-level):")
                 layer_count = {}
                 for key in state_dict.keys():
                     layer_type = key.split('.')[0]
                     layer_count[layer_type] = layer_count.get(layer_type, 0) + 1
-                
+
                 for layer, count in sorted(layer_count.items()):
                     arcpy.AddMessage(f"  {layer}: {count} parameters")
-            
+
             arcpy.AddMessage("\n" + "=" * 80)
-            
+
         except Exception as e:
             arcpy.AddError(f"Error inspecting model: {str(e)}")
             import traceback
             arcpy.AddError(traceback.format_exc())
 
+# ------------------------------------------------------------------------------
+# ValidateModel Tool
+# ------------------------------------------------------------------------------
+
 class ValidateModel(object):
-    """Tool to validate model can be loaded"""
+    """Tool to validate that a model can be loaded and run on dummy data"""
+
     def __init__(self):
         self.label = "Validate Model"
         self.description = "Test if a model can be loaded successfully"
         self.canRunInBackground = False
-        # Define supported models and their configurations
-        self.model_configs = MODEL_CONFIGS
+        self.registry = ModelRegistry()
 
     def getParameterInfo(self):
         params = []
-        
-        params.append(arcpy.Parameter(
+
+        p_model_folder = arcpy.Parameter(
+            displayName="Folder Containing Models",
+            name="model_folder",
+            datatype="DEFolder",
+            parameterType="Required",
+            direction="Input"
+        )
+        p_model_folder.value = TOOLBOX_DIR
+        params.append(p_model_folder)
+
+        p_model_file = arcpy.Parameter(
             displayName="Model File (.pth)",
             name="model_file",
-            datatype="DEFile",
+            datatype="GPString",
             parameterType="Required",
-            direction="Input"))
-        params[0].filter.list = ['pth', 'pt']
-        
-        params.append(arcpy.Parameter(
-            displayName="Number of Classes",
+            direction="Input"
+        )
+        p_model_file.filter.type = "ValueList"
+        p_model_file.filter.list = []
+        params.append(p_model_file)
+
+        p_num_classes = arcpy.Parameter(
+            displayName="Number of Classes (optional, overrides EMD)",
             name="num_classes",
             datatype="GPLong",
-            parameterType="Required",
-            direction="Input"))
-        params[1].value = 6
-
-        params.append(arcpy.Parameter(
-            displayName="Model Architecture",
-            name="model_architecture",
-            datatype="GPString",
-            parameterType="Required",
-            direction="Input"))
-        params[2].filter.type = "ValueList"
-        params[2].filter.list = list(self.model_configs.keys())
-        params[2].value = "SegFormer"
-        
-        # Model Configuration Category
-        params.append(arcpy.Parameter(
-            displayName="Pretrained Backbone",
-            name="pretrained_backbone",
-            datatype="GPString",
             parameterType="Optional",
-            direction="Input"))
-        params[3].filter.type = "ValueList"
-        params[3].value = self.model_configs["SegFormer"]["default_backbone"]
-        params[3].filter.list = list(self.model_configs["SegFormer"]["backbone_options"])
-        params[3].category = "Model Configuration"
-        
-        params.append(arcpy.Parameter(
-            displayName="Image Size (pixels)",
+            direction="Input"
+        )
+        p_num_classes.value = None
+        params.append(p_num_classes)
+
+        p_img_size = arcpy.Parameter(
+            displayName="Image Size (pixels, optional, overrides EMD)",
             name="image_size",
             datatype="GPLong",
             parameterType="Optional",
-            direction="Input"))
-        params[4].value = 512
-        params[4].category = "Model Configuration"
+            direction="Input"
+        )
+        p_img_size.value = None
+        params.append(p_img_size)
+
+        # Initial populate
+        try:
+            folder = p_model_folder.valueAsText or TOOLBOX_DIR
+            self.registry.scan_folder(folder)
+            model_files = [m.get("ModelFile") for m in self.registry.models if m.get("ModelFile")]
+            p_model_file.filter.list = model_files
+            if model_files:
+                p_model_file.value = model_files[0]
+        except Exception:
+            pass
 
         return params
 
     def updateParameters(self, parameters):
-        """Update parameters dynamically based on model selection"""
-        if parameters[2].altered:
-            model_name = parameters[2].valueAsText
+        p_folder = parameters[0]
+        p_model_file = parameters[1]
 
-            if model_name in self.model_configs:
-                config = self.model_configs[model_name]
+        if p_folder.altered:
+            try:
+                self.registry.scan_folder(p_folder.valueAsText)
+                model_files = [m.get("ModelFile") for m in self.registry.models if m.get("ModelFile")]
+                p_model_file.filter.list = model_files
+                if model_files and p_model_file.valueAsText not in model_files:
+                    p_model_file.value = model_files[0]
+            except Exception:
+                pass
 
-                # Update pretrained backbone dropdown options
-                parameters[3].filter.list = config["backbone_options"]
-
-                # Set default backbone if current value not in new list
-                if parameters[3].value not in config["backbone_options"]:
-                    parameters[3].value = config["default_backbone"]
-
-                # Update image size
-                parameters[4].value = config["recommended_tile_size"]
         return
 
     def execute(self, parameters, messages):
         try:
             import torch
-            
-            model_file = parameters[0].valueAsText
-            num_classes = parameters[1].value
-            model_architecture = parameters[2].valueAsText
-            backbone = parameters[3].valueAsText
-            image_size = parameters[4].value or 512
+
+            folder = parameters[0].valueAsText
+            model_file_name = parameters[1].valueAsText
+            num_classes_override = parameters[2].value
+            img_size_override = parameters[3].value
+
+            self.registry.scan_folder(folder)
+            selected_emd = None
+            for m in self.registry.models:
+                if m.get("ModelFile") == model_file_name:
+                    selected_emd = m
+                    break
+
+            if not selected_emd:
+                arcpy.AddError("Could not find EMD for selected model file.")
+                return
+
+            pth_path = self.registry.get_pth_path(selected_emd)
+            if not pth_path or not os.path.exists(pth_path):
+                arcpy.AddError(f"Weight file not found: {pth_path}")
+                return
+
+            arch = selected_emd.get("ModelConfiguration")
+            backbone = selected_emd.get("ModelBackbone")
+            emd_classes = self.registry.get_classes(selected_emd)
+            emd_img_size = self.registry.get_image_size(selected_emd)
+
+            if num_classes_override is not None:
+                num_classes = num_classes_override
+            else:
+                num_classes = len(emd_classes) if emd_classes else 1
+
+            if img_size_override is not None:
+                img_size = img_size_override
+            else:
+                img_size = emd_img_size
 
             arcpy.AddMessage("=" * 80)
             arcpy.AddMessage("Model Validation")
             arcpy.AddMessage("=" * 80)
-            
+            arcpy.AddMessage(f"\nEMD: {selected_emd.get('emd_path')}")
+            arcpy.AddMessage(f"Architecture: {arch}")
+            arcpy.AddMessage(f"Backbone: {backbone}")
+            arcpy.AddMessage(f"Model weights: {pth_path}")
+            arcpy.AddMessage(f"Num classes (used): {num_classes}")
+            arcpy.AddMessage(f"Image size (used): {img_size}")
+
+            # Load checkpoint to ensure readable
             arcpy.AddMessage("\n[1/3] Loading model checkpoint...")
-            _ = torch.load(model_file, map_location='cpu')
+            _ = torch.load(pth_path, map_location='cpu')
             arcpy.AddMessage("✓ Checkpoint loaded")
-            
-            
-            class DummyDataset:
-                def __init__(self, img_size):
-                    self.dummy_img = torch.zeros(3, img_size, img_size)
-                def __getitem__(self, idx):
-                    return (self.dummy_img, None)
-            class DummyData:
-                def __init__(self, n_classes, img_size=512):
-                    self.classes = [f"Class{i}" for i in range(n_classes)]
-                    self.train_ds = DummyDataset(img_size)
 
-
+            # Build model
             arcpy.AddMessage("\n[2/3] Initializing model architecture...")
-            dummy_data = DummyData(num_classes, img_size=image_size)
-            model_wrapper : ModelClass = getattr(models, self.model_configs[model_architecture]["class_name"])()
-            
-            arcpy.AddMessage(f'Backbone: {backbone, backbone == "resnet18"}, model_wrapper: {model_wrapper}')
-            
-            model = model_wrapper.get_model(dummy_data, backbone=backbone, state_dict=model_file)
-        
-            
+
+            try:
+                wrapper_class = getattr(models, arch)
+            except AttributeError:
+                arcpy.AddError(f"Model class '{arch}' not found in ModelClasses")
+                return
+
+            model_wrapper: ModelClass = wrapper_class()
+            model = model_wrapper.get_model(backbone=backbone, state_dict=pth_path, image_size=img_size, num_classes=len(emd_classes) if emd_classes else 1)
             arcpy.AddMessage("✓ Model architecture created")
-            
+
+            # Test inference
             arcpy.AddMessage("\n[3/3] Testing inference...")
             model.eval()
-            test_input = torch.randn(1, 3, image_size, image_size)
+            test_input = torch.randn(1, 3, img_size, img_size)
             with torch.no_grad():
                 output = model(test_input)
-            
-            arcpy.AddMessage(f"✓ Inference test successful")
+
+            arcpy.AddMessage("✓ Inference test successful")
             arcpy.AddMessage(f"  Input shape: {test_input.shape}")
-            arcpy.AddMessage(f"  Output shape: {output.shape}")
+            if hasattr(output, "shape"):
+                arcpy.AddMessage(f"  Output shape: {output.shape}")
             arcpy.AddMessage("\n" + "=" * 80)
             arcpy.AddMessage("✓ Model validation passed!")
             arcpy.AddMessage("=" * 80)
-            
+
         except Exception as e:
             arcpy.AddError("\n" + "=" * 80)
             arcpy.AddError("✗ Model validation failed!")
