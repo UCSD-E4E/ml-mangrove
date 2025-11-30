@@ -28,7 +28,7 @@ If extra dependencies need to be installed manually: consider the cloning the ac
 Example commands for manual install (though, these may lead to conflicts):
 ```bash
 # GPU version (recommended if you have NVIDIA GPU)
-conda install pytorch torchvision pytorch-cuda=11.8 -c pytorch -c nvidia
+conda install pytorch torchvision pytorch-cuda=x.x -c pytorch -c nvidia
 pip install transformers
 
 # OR CPU version (no GPU)
