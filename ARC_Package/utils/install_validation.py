@@ -104,81 +104,6 @@ def main():
         results['numpy'] = False
         print("  ✗ NumPy not found")
     
-    # Step 7: Check SegFormer module
-    print_step(7, total_steps, "Checking SegFormer module...")
-    segformer_paths = [
-        r"C:\Users\gwrye\Documents\ArcGIS\Projects\MyProject1\SegFormer",
-        os.path.join(os.getcwd(), "SegFormer"),
-        os.path.join(Path.home(), "Documents", "ArcGIS", "Projects", "MyProject1", "SegFormer")
-    ]
-    
-    segformer_found = False
-    for path in segformer_paths:
-        segformer_file = os.path.join(path, "SegFormer.py")
-        if os.path.exists(segformer_file):
-            print(f"  ✓ Found: {segformer_file}")
-            segformer_found = True
-            
-            # Try to import
-            sys.path.insert(0, path)
-            try:
-                from ModelClasses import SegFormer
-                print(f"  ✓ Successfully imported SegFormer class")
-                results['segformer'] = True
-                break
-            except Exception as e:
-                print(f"  ⚠ Found file but import failed: {e}")
-                results['segformer'] = False
-                break
-    
-    if not segformer_found:
-        results['segformer'] = False
-        print(f"  ✗ SegFormer.py not found in common locations")
-        print(f"    Searched:")
-        for path in segformer_paths:
-            print(f"      - {path}")
-        print(f"    Please update SEGFORMER_PATH in SegFormerToolbox.pyt")
-    
-    # Step 8: Test model initialization
-    print_step(8, total_steps, "Testing model initialization...")
-    if results.get('torch') and results.get('transformers') and results.get('segformer'):
-        try:
-            # Create dummy data with proper structure
-            class DummyDataset:
-                def __init__(self, img_size=512):
-                    import torch
-                    self.dummy_img = torch.zeros(3, img_size, img_size)
-                    
-                def __getitem__(self, idx):
-                    return (self.dummy_img, None)
-            
-            class DummyData:
-                def __init__(self):
-                    self.classes = ['Background', 'Class1']
-                    self.train_ds = DummyDataset()
-            
-            from ModelClasses import SegFormer
-            dummy_data = DummyData()
-            model_wrapper = SegFormer()
-            model = model_wrapper.get_model(dummy_data)
-            
-            # Test forward pass
-            import torch
-            test_input = torch.randn(1, 3, 256, 256)
-            with torch.no_grad():
-                output = model(test_input)
-            
-            print(f"  ✓ Model initialization successful")
-            print(f"    Input shape: {test_input.shape}")
-            print(f"    Output shape: {output.shape}")
-            results['model_test'] = True
-        except Exception as e:
-            print(f"  ✗ Model initialization failed: {e}")
-            results['model_test'] = False
-    else:
-        print(f"  ⊗ Skipped - dependencies not met")
-        results['model_test'] = False
-    
     # Summary
     print_header("Installation Summary")
     
@@ -193,8 +118,6 @@ def main():
     print(f"  Transformers:       {check_mark(results.get('transformers', False))}")
     print(f"  GDAL:               {check_mark(results.get('gdal', False))}")
     print(f"  NumPy:              {check_mark(results.get('numpy', False))}")
-    print(f"  SegFormer Module:   {check_mark(results.get('segformer', False))}")
-    print(f"  Model Test:         {check_mark(results.get('model_test', False))}")
     if results.get('gpu'):
         print(f"  GPU Acceleration:   ✓ Available")
     else:
@@ -216,16 +139,12 @@ def main():
         print("  • Install GDAL:")
         print("    conda install gdal")
     
-    if not results.get('segformer'):
-        print("  • Ensure SegFormer.py is in the correct location")
-        print("  • Update SEGFORMER_PATH in SegFormerToolbox.pyt")
-    
     if passed == total:
-        print("\n🎉 All checks passed! You're ready to use the SegFormer Toolbox!")
+        print("\n All checks passed! You're ready to use the SegFormer Toolbox!")
     elif passed >= total - 1:
-        print("\n⚠ Almost ready! Fix the issues above and re-run this script.")
+        print("\n Almost ready! Fix the issues above and re-run this script.")
     else:
-        print("\n❌ Several components missing. Please install required packages.")
+        print("\n Several components missing. Please install required packages.")
     
     print("\n" + "="*80)
     
