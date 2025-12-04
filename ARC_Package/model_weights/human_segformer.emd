@@ -1,0 +1,18 @@
+{
+  "Task": "human segmentation",
+  "Framework": "PyTorch",
+  "ModelConfiguration": "SegFormer",
+  "ModelBackbone": "nvidia/segformer-b2-finetuned-ade-512-512",
+  "ModelFile": "human_segformer.pth",
+  "Classes": [
+    {"Value": 0, "Name": "Background"},
+    {"Value": 1, "Name": "Building"},
+    {"Value": 2, "Name": "Vegetation"},
+    {"Value": 3, "Name": "Water"},
+    {"Value": 4, "Name": "Road"},
+  ],
+  "ImageHeight": 512,
+  "ImageWidth": 512,
+  "ExtractBands": [1, 2, 3],
+  "InferenceFunction": "SegFormer.forward"
+}
