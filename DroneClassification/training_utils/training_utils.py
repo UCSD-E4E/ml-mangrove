@@ -14,6 +14,46 @@ from typing import Callable, List, Optional, Union, Tuple
 from torch.amp.grad_scaler import GradScaler
 from torch.amp.autocast_mode import autocast
 import psutil
+import numpy as np
+from scipy.ndimage import binary_dilation
+
+def boundary_iou(gt_mask, pred_mask, dilation_ratio=0.02):
+    """
+    Compute Boundary IoU (from https://arxiv.org/abs/2103.16562).
+    """
+    # Calculate boundary width = 2% of image diagonal
+    H, W = gt_mask.shape
+    diag = np.sqrt(H**2 + W**2)
+    d = max(1, int(dilation_ratio * diag))
+
+    kernel = np.ones((3, 3), dtype=np.uint8)
+
+    def get_boundary(mask):
+        dil = binary_dilation(mask, structure=kernel, iterations=d)
+        return np.logical_and(dil, mask)
+
+    gt_boundary = get_boundary(gt_mask)
+    pred_boundary = get_boundary(pred_mask)
+
+    intersection = np.logical_and(gt_boundary, pred_boundary).sum()
+    union = np.logical_or(gt_boundary, pred_boundary).sum()
+
+    if union == 0:
+        return 1.0 if intersection == 0 else 0.0
+
+    return intersection / union
+
+class ChipClassificationMetrics:
+            """Simple metrics for chip classification tasks."""
+    
+            @staticmethod
+            def accuracy(pred_logits, labels):
+                preds = pred_logits.argmax(dim=1)
+                correct = (preds == labels).sum().item()
+                total = labels.numel()
+                return correct / total if total > 0 else 0.0
+
+
 
 def setup_device():
     """
@@ -112,6 +152,8 @@ class TrainingSession:
         self.metric_mode = metric_mode
         self._metric_registry = {
             "segmentation": self._calculate_segmentation_metrics,  # default
+            "boundary": self._calculate_segmentation_metrics,   # segmentation + Boundary IoU
+            "chip": self._calculate_chip_metrics,
             "none": self._calculate_noop_metrics,                  # loss only
         }
  
@@ -321,6 +363,24 @@ class TrainingSession:
                 # One-hot encoded [B,C,H,W] -> [B,H,W] class indices
                 targets = torch.argmax(targets, dim=1)
 
+                # ---- Boundary IoU ----
+        # Only valid for binary segmentation (class count = 1 or 2)
+        if predictions.shape[1] == 1 or predictions.shape[1] == 2:
+            # Convert to numpy masks (0/1)
+            pred_np = pred_classes.cpu().numpy().astype(np.uint8)
+            target_np = targets.cpu().numpy().astype(np.uint8)
+
+            # Compute Boundary IoU per batch
+            boundary_scores = []
+            for b in range(pred_np.shape[0]):
+                boundary_scores.append(
+                    boundary_iou(target_np[b], pred_np[b])
+                )
+            mean_boundary_iou = float(np.mean(boundary_scores))
+        else:
+            mean_boundary_iou = None
+
+
         # Flatten tensors
         pred_flat = pred_classes.flatten()
         target_flat = targets.flatten()
@@ -378,10 +438,18 @@ class TrainingSession:
             'Precision': round(mean_precision, 4),
             'Recall': round(mean_recall, 4),
             'IoU': round(mean_iou, 4),
+            'Boundary_IoU': round(mean_boundary_iou, 4) if mean_boundary_iou is not None else None,
             'class_ious': np.round(class_ious, 4).tolist(),
             'class_precisions': np.round(class_precisions, 4).tolist(),
             'class_recalls': np.round(class_recalls, 4).tolist()
         }
+    
+    def _calculate_chip_metrics(self, predictions, targets):
+        """Calculate metrics for chip classification models."""
+        metrics = {}
+        metrics["Accuracy"] = ChipClassificationMetrics.accuracy(predictions, targets)
+        return metrics
+
     
     def _setup_logging(self):
         """Setup experiment logging"""
