@@ -73,28 +73,6 @@ This notebook trains MambaUNet on real aerial imagery and compares with ResNet_U
 
 ---
 
-## Next Steps
-
-We have couple options to choose from:
-
-**Option 1: Improve MambaUNet Performance**
-- Extend training to 10-20 epochs to reach higher IoU
-- Experiment with different architectures (more Mamba layers, larger embeddings)
-- Fine-tune hyperparameters (learning rate, batch size, weight decay)
-- Apply data augmentation (rotations, flips, color jittering) to improve generalization
-
-**Option 2: Extended Baseline Comparison**
-- Train both models for more epochs (20-50) to convergence
-- Compare inference speed and memory usage on test set
-- Evaluate on mangrove-specific imagery to test domain transfer
-- Generate performance curves and statistical comparisons
-
-**Option 3: Human Infrastructure Detection**
-- Pivot to human-in-the-loop infrastructure detection task
-- Fine-tune existing models (MambaUNet or ResNet) on new labeled data
-- Integrate into inference pipeline for real-world deployment
-- Focus on practical accuracy and computational efficiency for edge devices
-
 **Dataset**: Landcover.ai v1
 - **Type**: Aerial land cover segmentation (similar domain to mangrove detection)
 - **Classes**: Background (0), Building (1), Woodland (2), Water (3), Road (4)
