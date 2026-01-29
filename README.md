@@ -1,54 +1,113 @@
-# Mangrove Monitoring: Machine Learning
+# Engineers for Exploration - Mangrove Monitoring
 
-This repo includes all the tools and testing related to ML development for the Mangrove Monitoring Project, which consists of four main areas: Aerial Imagery Segmentation, Drone-Satellite Fusion Methods, Satellite Super-Resolution, and an ArcGIS Toolbox package.
+Machine learning platform for mangrove ecosystem monitoring from aerial and satellite imagery.
 
-## Aerial Imagery Segmentation
-Our core model performs pixel-level detection of mangrove trees, and it was trained on ~100km2 of hand labelled data from the coasts of Jamaica and Mexico. Additionally, we are training a model to detect human-made structures (roads, buildings) that threaten mangroves. Currently seeking/building appropriate datasets that generalize well to mangrove environments.
+**Developed by**: Mangrove Monitoring Team, Engineers for Exploration (E4E), UC San Diego
 
-**Todo:**
-- Source labeled human infrastructure vs natural features data
-- Implement overlap in tile processing
-- Consider creating labeled human infrastructure data from our mangrove imagery
-- Normalize and combine multiple data sources
+---
 
-## Drone-Satellite Fusion
-The Mangrove team has previously developed methods for using mixed-resolution imagery to improve predictions. [Previous Paper](https://www.climatechange.ai/papers/neurips2020/23). We are improving upon this work by implementing more advanced machine learning architectures, experimenting with different fusion methods, and creating an automated tool that will automatically fetch satellite imagery for a given drone image.
+## Overview
 
-## Satellite Super-Res
-Aimed to enhance satellite imagery for global mangrove tracking without drones. Discontinued because classifiers don't function well even at super-resolved resolution, but it is a useful tool to have.
+This repository provides tools for:
 
-**Todo:**
-- Implement image space Schrödinger Bridge Diffusion
-- Edit Schrödinger Bridge Latent Diffusion model to extract features using standard resnet. The multispectral resnet feature space is incompatible with the target rgb feature space, so we need to use the same standard resnet feature extractor for both. The only issue is we need to find a way to incorporate the multispectral channels into the process.
-- Find pretrained super-res models
-- Gather a dataset
+- **Pixel-level mangrove detection** from drone imagery (~100 km² labeled data)
+- **Infrastructure detection** (roads, buildings) threatening mangrove ecosystems
+- **ArcGIS Pro integration** for environmental scientists
+- **Experimental architectures** including state-space models (Mamba)
 
-## ArcGIS Toolbox
-Drop-in toolbox for ArcGIS Pro enabling environmental scientists to easily deploy and use our models for imagery classification.
+---
 
-**Todo:**
-- Filter models by task in UI
-- Package model info into .emd files
-- Trim edge predictions with no input
-- Add overlap blending logic
-- Implement batch processing for GPU acceleration
+## Quick Start
 
-## Our Pipeline
-![pipeline](readme_resources/Mangrove_Pipeline.jpeg)
+```bash
+# Clone
+git clone https://github.com/UCSD-E4E/ml-mangrove.git
+cd ml-mangrove
 
-### 1. Data Processing
-See `DroneClassification/data/process_data` notebook for processing geospatial imagery. All tools are stored in the `utils.py` file.
+# Setup environment
+conda create -n mangrove python=3.11 -y
+conda activate mangrove
 
-### 2. Model Training
-Model architectures and loss functions are in `DroneClassification/models`. See `model_training_ground` notebook for training template.
+# Install PyTorch (with CUDA if available)
+# Follow https://pytorch.org/ to install torch for your OS
+# Example for Windows: pip3 install torch torchvision --index-url https://download.pytorch.org/whl/cu126
 
-**Current Models:**
-- ResNet18 UNet: Best for Mangrove Classification
-- SegFormer B0/B2: Best for Human Infrastructure 
+pip install -r requirements.txt
+```
 
-**Super-Resolution (testing):**
-- Schrödinger Bridge Latent Diffusion
-- 3-layer SRCNN
+See [Environment Setup](docs/setup/environment.md) for detailed instructions.
 
-### 3. ArcGIS Packaging
-`ARC_Package` contains the toolbox and model formatting template. Each architecture requires a ModelClass to be implemented.
+---
+
+## Project Structure
+
+```
+ml-mangrove/
+├── DroneClassification/    # Main ML pipeline
+│   ├── data/               # Data processing & loading
+│   ├── models/             # Model architectures & losses
+│   ├── training_utils/     # Training framework
+│   ├── experiments/        # Training outputs & logs
+│   └── testing/            # Experimental work (Mamba integration)
+├── ARC_Package/            # ArcGIS Pro toolbox
+├── docs/                   # Documentation
+└── archive/                # Historical approaches (reference only)
+```
+
+---
+
+## Models
+
+| Model | Use Case | Performance |
+|-------|----------|-------------|
+| **ResNet18-UNet** | Mangrove detection | 82-85% IoU |
+| **SegFormer B0/B2** | Infrastructure detection | Fast / Accurate |
+| **DeepLabv3+** | Multi-class segmentation | 81-84% mIoU |
+| **MambaUNet** | Experimental (state-space) | 25× smaller model |
+
+---
+
+## Documentation
+
+| Guide | Description |
+|-------|-------------|
+| [Environment Setup](docs/setup/environment.md) | Python, CUDA, WSL2 configuration |
+| [ArcGIS Setup](docs/setup/arcgis.md) | Toolbox installation for ArcGIS Pro |
+| [Data Preparation](docs/guides/data_prep.md) | Processing geospatial imagery |
+| [Model Training](docs/guides/training.md) | Training segmentation models |
+| [Inference](docs/guides/inference.md) | Running predictions |
+| [Model Architectures](docs/architecture/models.md) | Architecture details |
+| [Loss Functions](docs/architecture/losses.md) | Available loss functions |
+
+Full documentation: [docs/index.md](docs/index.md)
+
+---
+
+## Pipeline
+
+![Pipeline](docs/images/Mangrove_Pipeline.jpeg)
+
+1. **Data Processing**: Tile GeoTIFFs, create train/val/test splits
+2. **Model Training**: Train with custom losses (Jaccard, Boundary IoU)
+3. **Deployment**: Package for ArcGIS Pro or run inference directly
+
+---
+
+## Key Files
+
+| File | Purpose |
+|------|---------|
+| `DroneClassification/data/utils.py` | Geospatial utilities |
+| `DroneClassification/models/models.py` | Model architectures |
+| `DroneClassification/models/loss.py` | Loss functions |
+| `DroneClassification/training_utils/training_utils.py` | Training framework |
+| `ARC_Package/SegmentationToolbox.pyt` | ArcGIS toolbox |
+
+---
+
+## Contributing
+
+1. Create a feature branch from `master`
+2. Follow existing code style
+3. Add tests for new functionality
+4. Submit PR with clear description
