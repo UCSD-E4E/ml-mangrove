@@ -11,5 +11,7 @@ __pycache__/
 */__pycache__
 .venv/
 .vscode/settings.json
-DroneClassification/testing/mamba/landcover.ai.v1/*
+DroneClassification/human_infra/data/landcover.ai.v1/*
+DroneClassification/human_infra/data/0_5m/*
+DroneClassification/human_infra/weights/*
 *.pth
