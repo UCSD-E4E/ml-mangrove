@@ -28,12 +28,11 @@ from models import __all__ as model_class_names, ModelClass
 # ------------------------------------------------------------------------------
 # Toolbox path / imports
 # ------------------------------------------------------------------------------
-
 def process_raster(input_path, output_path,
                    model_class, model,
                    device, tile_size, overlap, batch_size,
-                   nodata_value, extract_bands, threshold,
-                   use_tta: bool = False):
+                   nodata_value, extract_bands, threshold=0.5,
+                   use_tta: bool = False) -> str:
     """
     Process raster with tiling using smooth blending, keeping all heavy
     computation in PyTorch tensors (optionally on GPU).
@@ -74,14 +73,14 @@ def process_raster(input_path, output_path,
     arcpy.AddMessage(f"  Size: {width} x {height} pixels")
     arcpy.AddMessage(f"  Bands used: {n_bands} (indices: {band_indices})")
 
-    # Input nodata per band
-    input_nodata = []
+    # Pre-fetch band handles & nodata
+    bands = []
     for bidx in band_indices:
         band = src_ds.GetRasterBand(bidx)
-        input_nodata.append(band.GetNoDataValue())
+        bands.append(band)
 
     # ------------------------------------------------------------------
-    # Create output raster
+    # Create output raster (always GeoTIFF here)
     # ------------------------------------------------------------------
     driver = gdal.GetDriverByName('GTiff')
     dst_ds = driver.Create(
@@ -91,7 +90,7 @@ def process_raster(input_path, output_path,
     dst_ds.SetGeoTransform(src_ds.GetGeoTransform())
     dst_ds.SetProjection(src_ds.GetProjection())
     dst_band = dst_ds.GetRasterBand(1)
-    dst_band.SetNoDataValue(nodata_value)
+    dst_band.SetNoDataValue(int(nodata_value))
 
     # ------------------------------------------------------------------
     # Tiling setup
@@ -107,7 +106,7 @@ def process_raster(input_path, output_path,
     arcpy.SetProgressor("step", "Processing tiles...", 0, total_tiles, 1)
 
     # ------------------------------------------------------------------
-    # Determine num_classes
+    # Determine num_classes (single dummy forward)
     # ------------------------------------------------------------------
     with torch.no_grad():
         dummy = torch.zeros((1, n_bands, tile_size, tile_size),
@@ -128,20 +127,11 @@ def process_raster(input_path, output_path,
     # Global accumulators
     # ------------------------------------------------------------------
     accum = torch.zeros((num_classes, height, width),
-                          dtype=torch.float32, device=device)
+                        dtype=torch.float32, device=device)
     weight = torch.zeros((height, width),
-                           dtype=torch.float32, device=device)
+                         dtype=torch.float32, device=device)
 
-    # ------------------------------------------------------------------
-    # Precompute blending masks
-    # ------------------------------------------------------------------
-    # Pyramid blend mask (edge fade)
-    w = torch.linspace(0.0, 1.0, steps=tile_size, device=device)
-    wx = torch.minimum(w, torch.flip(w, dims=[0]))
-    blend_mask = torch.outer(wx, wx)  # [H, W]
-    blend_mask = blend_mask / blend_mask.max()
-
-    # Edge weight mask (ESRI-style edge confidence taper)
+    # Edge confidence tapering (precomputed, reused)
     edge_weight_mask_tensor = compute_edge_weight(
         tile_size=tile_size,
         padding=overlap,
@@ -155,6 +145,13 @@ def process_raster(input_path, output_path,
         tta_transforms = [0, 1, 2, 3]
 
     processed = 0
+
+    # Pre-allocate tile_logits once & reuse (avoid re-alloc per tile)
+    tile_logits = torch.zeros(
+        (num_classes, tile_size, tile_size),
+        dtype=torch.float32,
+        device=device
+    )
 
     # ------------------------------------------------------------------
     # Main tile loop (torch accumulation)
@@ -176,36 +173,38 @@ def process_raster(input_path, output_path,
                 tile_mask_np = np.ones((tile_size, tile_size),
                                        dtype=np.float32)
 
-                for i, bidx in enumerate(band_indices):
-                    band = src_ds.GetRasterBand(bidx)
+                for i, band in enumerate(bands):
                     data = band.ReadAsArray(x_off, y_off, x_size, y_size)
                     if data is not None:
                         tile_data_np[i, :y_size, :x_size] = data
-                        if input_nodata[i] is not None:
-                            valid = (data != input_nodata[i]).astype(np.float32)
+                        if nodata_value is not None:
+                            valid = (data != nodata_value).astype(np.float32)
                             tile_mask_np[:y_size, :x_size] *= valid
+
+                # Skip tile if all NoData
+                if tile_mask_np.max() == 0 or tile_data_np.max() == 0:
+                    processed += 1
+                    if processed % 10 == 0:
+                        arcpy.SetProgressorPosition(processed)
+                    continue
 
                 # -----------------------------
                 # Convert to torch tensors
                 # -----------------------------
                 tile_data = torch.from_numpy(tile_data_np).to(
                     device=device, dtype=torch.float32
-                )  # [C, H, W] on device
+                )  # [C, H, W]
                 tile_mask = torch.from_numpy(tile_mask_np).to(
                     device=device, dtype=torch.float32
                 )  # [H, W]
 
-                # Zero out invalid pixels
-                tile_data[:, tile_mask == 0] = 0.0
+                # Zero out invalid pixels in the input
+                tile_data *= tile_mask.unsqueeze(0)
 
                 # -----------------------------
-                # TTA loop (torch only)
+                # TTA loop
                 # -----------------------------
-                tile_logits = torch.zeros(
-                    (num_classes, tile_size, tile_size),
-                    dtype=torch.float32,
-                    device=device
-                )
+                tile_logits.zero_()  # reuse preallocated tensor
 
                 for tta_idx in tta_transforms:
                     # Apply transform in tensor space
@@ -213,10 +212,16 @@ def process_raster(input_path, output_path,
 
                     # ModelClass normalization
                     t_in = model_class.transform_input(t_in)
-                    # transform_input may add batch dim; ensure device
-                    t_in = t_in.to(device=device, dtype=torch.float32)  # [1,C,H,W]
+                    # Ensure [1,C,H,W] on device
+                    if t_in.ndim == 3:
+                        t_in = t_in.unsqueeze(0)
+                    t_in = t_in.to(device=device, dtype=torch.float32)
 
-                    with torch.amp.autocast_mode.autocast(device_type=device.type):
+                    # AMP only if CUDA & requested
+                    with torch.amp.autocast_mode.autocast(
+                        device_type=device.type,
+                        enabled=use_amp
+                    ):
                         out = model(t_in)  # [1,C',H,W] or similar
 
                     if isinstance(out, (tuple, list)):
@@ -226,10 +231,9 @@ def process_raster(input_path, output_path,
                     if out.ndim == 2:
                         out = out.unsqueeze(0)  # [1,H,W]
                     if out.ndim == 3:
-                        # assume [C,H,W]
-                        pass
+                        pass  # [C,H,W]
                     elif out.ndim == 4:
-                        out = out.squeeze(0)  # remove batch -> [C,H,W]
+                        out = out.squeeze(0)  # [C,H,W]
                     else:
                         raise RuntimeError(
                             f"Unexpected model output ndim={out.ndim}"
@@ -238,13 +242,10 @@ def process_raster(input_path, output_path,
                     # Reverse TTA
                     out = reverse_tta_transform(out, tta_idx)  # [C,H,W]
 
-                    # If model produced single-channel but num_classes>1, this is strange;
-                    # but usually C == num_classes or 1.
+                    # Align channels with num_classes
                     if out.shape[0] == 1 and num_classes > 1:
-                        # Broadcast to all classes (rare, but safe)
                         out = out.repeat(num_classes, 1, 1)
                     elif out.shape[0] != num_classes:
-                        # If num_classes==1, just take first channel
                         if num_classes == 1:
                             out = out[0:1, :, :]
                         else:
@@ -265,19 +266,21 @@ def process_raster(input_path, output_path,
                 x_end = min(x_off + tile_size, width)
                 tile_h = y_end - y_off
                 tile_w = x_end - x_off
+                tile_mask_sub = tile_mask[:tile_h, :tile_w]
+                
+                # dont blend if no data in tile
+                has_nodata = (tile_mask_sub < 1.0).any().item()
+                if has_nodata:
+                    tile_weight = tile_mask_sub
+                else:
+                    tile_weight = edge_weight_mask_tensor[:tile_h, :tile_w] * tile_mask_sub
 
-                # Combine blend mask, nodata mask, and edge weight
-                wmask_t = (
-                    blend_mask[:tile_h, :tile_w]
-                    * tile_mask[:tile_h, :tile_w]
-                    * edge_weight_mask_tensor[:tile_h, :tile_w]
-                )  # [Htile, Wtile]
+                # Apply weight to logits
+                weighted_logits = tile_logits[:, :tile_h, :tile_w] * tile_weight.unsqueeze(0)
 
-                # Accumulate logits
-                accum[:, y_off:y_end, x_off:x_end] += (
-                    tile_logits[:, :tile_h, :tile_w] * wmask_t.unsqueeze(0)
-                )
-                weight[y_off:y_end, x_off:x_end] += wmask_t
+                # Accumulate logits and weights
+                accum[:, y_off:y_end, x_off:x_end] += weighted_logits
+                weight[y_off:y_end, x_off:x_end] += tile_weight
 
                 processed += 1
 
@@ -302,13 +305,10 @@ def process_raster(input_path, output_path,
     # ------------------------------------------------------------------
     # Final blending & post-processing (torch)
     # ------------------------------------------------------------------
-    safe_weight_t = torch.where(
-        weight == 0.0,
-        torch.tensor(1.0, device=device, dtype=torch.float32),
-        weight
-    )  # [H,W]
+    valid = (weight > 0.0)  # [H,W]
 
-    blended_t = accum / safe_weight_t.unsqueeze(0)  # [C,H,W]
+    blended_t = torch.zeros_like(accum)  # [C,H,W]
+    blended_t[:, valid] = accum[:, valid] / weight[valid]
 
     # ModelClass post_process expects [N,C,H,W] or similar
     pred_t = model_class.post_process(
@@ -322,9 +322,9 @@ def process_raster(input_path, output_path,
 
     pred_t = pred_t.to(torch.int64)
 
-    # Apply nodata where weight is zero
+    # Apply nodata where there was no valid weight
     pred_t = pred_t.clone()
-    pred_t[weight == 0.0] = int(nodata_value)
+    pred_t[~valid] = int(nodata_value)
 
     # Convert once to NumPy for GDAL
     final_np = pred_t.cpu().numpy().astype(np.uint8)
@@ -333,57 +333,39 @@ def process_raster(input_path, output_path,
     dst_band.FlushCache()
     dst_ds.FlushCache()
 
+    # Close GDAL datasets before using ArcPy geoprocessing
     dst_band = None
     dst_ds = None
     src_ds = None
 
     arcpy.AddMessage(f"Processed {total_tiles} tiles with tensorized blending")
 
-    # Add Class Names to metadata
-    
-    try:
-        classnames = ",".join(class_names)               # ["No Mangrove","Mangrove"]
-        classcodes = ",".join(str(i) for i in range(len(class_names)))
-
-        arcpy.AddMessage("✓ Writing class metadata to raster...")
-
-        arcpy.management.SetRasterProperties(
-            output_raster,
-            classnames=classnames,
-            classcodes=classcodes
-        )
-
-        arcpy.AddMessage(f"✓ SetRasterProperties: classnames={classnames}")
-        arcpy.AddMessage(f"✓ SetRasterProperties: classcodes={classcodes}")
-
-    except Exception as e:
-        arcpy.AddWarning(f"⚠ Failed to write class metadata: {e}")
-
     # ------------------------------------------------------------------
-    # If geodatabase output, copy temp TIFF → GDB
+    # If target is a GDB/SDE, copy the temp TIFF into it
     # ------------------------------------------------------------------
     if is_gdb:
-        arcpy.AddMessage("  Copying to geodatabase...")
         try:
-            arcpy.management.CopyRaster(
-                actual_output,
-                output_path,
-                pixel_type="8_BIT_UNSIGNED",
-                nodata_value=nodata_value
-            )
-            arcpy.AddMessage(f"✓ Saved to geodatabase: {output_path}")
-            try:
-                os.remove(actual_output)
-            except Exception:
-                pass
-        except Exception as e:
-            arcpy.AddError(f"Failed to save to geodatabase: {e}")
-            arcpy.AddError(f"Temporary output saved at: {actual_output}")
-            raise
+            arcpy.AddMessage(f"Copying temporary TIFF to geodatabase:\n  {output_path}")
 
-    gc.collect()
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
+            # Overwrite any existing dataset with same name if needed
+            if arcpy.Exists(output_path):
+                arcpy.management.Delete(output_path)
+
+            arcpy.management.CopyRaster(
+                in_raster=actual_output,
+                out_rasterdataset=output_path,
+                pixel_type="8_BIT_UNSIGNED",
+                nodata_value=nodata_value,
+                colormap_to_RGB="NONE"
+            )
+
+            arcpy.AddMessage("✓ Copied classification raster into geodatabase")
+            actual_output = output_path  # return the GDB path
+
+        except Exception as e:
+            arcpy.AddWarning(f"⚠ Failed to copy TIFF into geodatabase: {e}")
+
+    return actual_output
 
 def compute_edge_weight(tile_size: int, padding: int, device):
     """
@@ -571,10 +553,7 @@ class ModelRegistry:
     def get_pth_path(self, model_emd):
         return model_emd.get("pth_path")
 
-# ------------------------------------------------------------------------------
 # EMD parsing helpers
-# ------------------------------------------------------------------------------
-
 def _clean_emd_json(text: str) -> str:
     """Clean EMD text into valid JSON:
     - Remove comments
@@ -615,8 +594,7 @@ class Toolbox(object):
         self.alias = "semantic_segmentation_toolbox"
         self.tools = [
             Classify,
-            ModelInfo,
-            ValidateModel
+            ModelInfo
         ]
 
 # ------------------------------------------------------------------------------
@@ -700,7 +678,7 @@ class Classify(object):
 
         # 5. Output Raster
         p_out_raster = arcpy.Parameter(
-            displayName="Output Classified Raster (.tif or geodatabase)",
+            displayName="Output Classified Raster (.tif or GDB)",
             name="output_raster",
             datatype="DERasterDataset",
             parameterType="Required",
@@ -814,18 +792,6 @@ class Classify(object):
         p_nodata.value = 255
         p_nodata.category = "Output Configuration"
         params.append(p_nodata)
-
-        # 14. Threshold
-        p_threshold = arcpy.Parameter(
-            displayName="Threshold",
-            name="threshold",
-            datatype="GPDouble",
-            parameterType="Optional",
-            direction="Input"
-        )
-        p_threshold.value = 0.5
-        p_threshold.category = "Output Configuration"
-        params.append(p_threshold)
 
         # Initial attempt to populate lists from toolbox dir
         try:
@@ -1076,7 +1042,6 @@ class Classify(object):
             backbone_param = parameters[11].valueAsText
             user_class_names_str = parameters[12].valueAsText
             nodata_value = parameters[13].value or 255
-            threshold = parameters[14].value or 0.5
 
             arcpy.AddMessage("=" * 80)
             arcpy.AddMessage("Semantic Segmentation Tool")
@@ -1181,12 +1146,14 @@ class Classify(object):
             arcpy.AddMessage(f"Overlap: {tile_overlap} pixels")
             arcpy.AddMessage(f"Batch size: {batch_size}")
 
-            process_raster(input_raster, output_raster,
+            output_raster = process_raster(input_raster, output_raster,
                 model_wrapper, model, device,
                 tile_size, tile_overlap, batch_size,
-                nodata_value, extract_bands, threshold,
-                tta
+                nodata_value, extract_bands,
+                use_tta=tta
             )
+
+            parameters[5].value = output_raster  # set output param
 
             arcpy.AddMessage("\n[5/5] Building pyramids and statistics...")
             self._finalize_output(output_raster, class_names, messages)
@@ -1315,19 +1282,28 @@ class Classify(object):
     def _finalize_output(self, output_path, class_names, messages):
         """Build pyramids, statistics, and RAT if possible."""
         try:
-            classnames = ",".join(class_names)               # ["No Mangrove","Mangrove"]
-            classcodes = ",".join(str(i) for i in range(len(class_names)))
+            arcpy.AddMessage("✓ Building Raster Attribute Table...")
+            # Create RAT (overwrite if exists)
+            
+            arcpy.management.BuildRasterAttributeTable(output_path, "Overwrite")
 
-            arcpy.AddMessage("✓ Writing class metadata to raster...")
+            # Ensure ClassName field exists
+            fields = [f.name for f in arcpy.ListFields(output_path)]
+            if "ClassName" not in fields:
+                arcpy.management.AddField(output_path, "ClassName", "TEXT")
 
-            arcpy.management.SetRasterProperties(
-                output_path,
-                classnames=classnames,
-                classcodes=classcodes
-            )
+            # Update RAT: match VALUE -> class_names[index]
+            with arcpy.da.UpdateCursor(output_path, ["VALUE", "ClassName"]) as cursor:
+                for value, cls in cursor:
+                    if 0 <= value < len(class_names):
+                        cursor.updateRow([value, class_names[value]])
+                    else:
+                        cursor.updateRow([value, "Unknown"])
 
+            arcpy.AddMessage("✓ Added class names to Raster Attribute Table")
         except Exception as e:
-            arcpy.AddWarning(f"⚠ Failed to write class metadata: {e}")
+            arcpy.AddWarning(f"⚠ Failed to write class names to RAT: {e}")
+        
         try:
             is_gdb = '.gdb' in output_path.lower() or '.sde' in output_path.lower()
 
@@ -1353,6 +1329,20 @@ class Classify(object):
 
             try:
                 arcpy.management.BuildRasterAttributeTable(output_path, "Overwrite")
+                 # Add field with class names (if not exists)
+                fields = [f.name for f in arcpy.ListFields(output_path)]
+                if "ClassName" not in fields:
+                    arcpy.management.AddField(output_path, "ClassName", "TEXT")
+
+                # Update RAT: assign class names based on raster codes
+                with arcpy.da.UpdateCursor(output_path, ["VALUE", "ClassName"]) as cur:
+                    for value, cls in cur:
+                        if 0 <= value < len(class_names):
+                            cur.updateRow([value, class_names[value]])
+                        else:
+                            # For safety on unexpected values
+                            cur.updateRow([value, "Unknown"])
+
                 arcpy.AddMessage("✓ Built raster attribute table")
             except Exception as e:
                 arcpy.AddMessage(f"  Could not build attribute table: {e}")
@@ -1439,181 +1429,3 @@ class ModelInfo(object):
             arcpy.AddError(f"Error inspecting model: {str(e)}")
             import traceback
             arcpy.AddError(traceback.format_exc())
-
-# ------------------------------------------------------------------------------
-# ValidateModel Tool
-# ------------------------------------------------------------------------------
-
-class ValidateModel(object):
-    """Tool to validate that a model can be loaded and run on dummy data"""
-
-    def __init__(self):
-        self.label = "Validate Model"
-        self.description = "Test if a model can be loaded successfully"
-        self.canRunInBackground = False
-        self.registry = ModelRegistry()
-
-    def getParameterInfo(self):
-        params = []
-
-        p_model_folder = arcpy.Parameter(
-            displayName="Folder Containing Models",
-            name="model_folder",
-            datatype="DEFolder",
-            parameterType="Required",
-            direction="Input"
-        )
-        p_model_folder.value = TOOLBOX_DIR
-        params.append(p_model_folder)
-
-        p_model_file = arcpy.Parameter(
-            displayName="Model File (.pth)",
-            name="model_file",
-            datatype="GPString",
-            parameterType="Required",
-            direction="Input"
-        )
-        p_model_file.filter.type = "ValueList"
-        p_model_file.filter.list = []
-        params.append(p_model_file)
-
-        p_num_classes = arcpy.Parameter(
-            displayName="Number of Classes (optional, overrides EMD)",
-            name="num_classes",
-            datatype="GPLong",
-            parameterType="Optional",
-            direction="Input"
-        )
-        p_num_classes.value = None
-        params.append(p_num_classes)
-
-        p_img_size = arcpy.Parameter(
-            displayName="Image Size (pixels, optional, overrides EMD)",
-            name="image_size",
-            datatype="GPLong",
-            parameterType="Optional",
-            direction="Input"
-        )
-        p_img_size.value = None
-        params.append(p_img_size)
-
-        # Initial populate
-        try:
-            folder = p_model_folder.valueAsText or TOOLBOX_DIR
-            self.registry.scan_folder(folder)
-            model_files = [m.get("ModelFile") for m in self.registry.models if m.get("ModelFile")]
-            p_model_file.filter.list = model_files
-            if model_files:
-                p_model_file.value = model_files[0]
-        except Exception:
-            pass
-
-        return params
-
-    def updateParameters(self, parameters):
-        p_folder = parameters[0]
-        p_model_file = parameters[1]
-
-        if p_folder.altered:
-            try:
-                self.registry.scan_folder(p_folder.valueAsText)
-                model_files = [m.get("ModelFile") for m in self.registry.models if m.get("ModelFile")]
-                p_model_file.filter.list = model_files
-                if model_files and p_model_file.valueAsText not in model_files:
-                    p_model_file.value = model_files[0]
-            except Exception:
-                pass
-
-        return
-
-    def execute(self, parameters, messages):
-        try:
-            import torch
-
-            folder = parameters[0].valueAsText
-            model_file_name = parameters[1].valueAsText
-            num_classes_override = parameters[2].value
-            img_size_override = parameters[3].value
-
-            self.registry.scan_folder(folder)
-            selected_emd = None
-            for m in self.registry.models:
-                if m.get("ModelFile") == model_file_name:
-                    selected_emd = m
-                    break
-
-            if not selected_emd:
-                arcpy.AddError("Could not find EMD for selected model file.")
-                return
-
-            pth_path = self.registry.get_pth_path(selected_emd)
-            if not pth_path or not os.path.exists(pth_path):
-                arcpy.AddError(f"Weight file not found: {pth_path}")
-                return
-
-            arch = selected_emd.get("ModelConfiguration")
-            backbone = selected_emd.get("ModelBackbone")
-            emd_classes = self.registry.get_classes(selected_emd)
-            emd_img_size = self.registry.get_image_size(selected_emd)
-
-            if num_classes_override is not None:
-                num_classes = num_classes_override
-            else:
-                num_classes = len(emd_classes) if emd_classes else 1
-
-            if img_size_override is not None:
-                img_size = img_size_override
-            else:
-                img_size = emd_img_size
-
-            arcpy.AddMessage("=" * 80)
-            arcpy.AddMessage("Model Validation")
-            arcpy.AddMessage("=" * 80)
-            arcpy.AddMessage(f"\nEMD: {selected_emd.get('emd_path')}")
-            arcpy.AddMessage(f"Architecture: {arch}")
-            arcpy.AddMessage(f"Backbone: {backbone}")
-            arcpy.AddMessage(f"Model weights: {pth_path}")
-            arcpy.AddMessage(f"Num classes (used): {num_classes}")
-            arcpy.AddMessage(f"Image size (used): {img_size}")
-
-            # Load checkpoint to ensure readable
-            arcpy.AddMessage("\n[1/3] Loading model checkpoint...")
-            _ = torch.load(pth_path, map_location='cpu')
-            arcpy.AddMessage("✓ Checkpoint loaded")
-
-            # Build model
-            arcpy.AddMessage("\n[2/3] Initializing model architecture...")
-
-            try:
-                wrapper_class = getattr(models, arch)
-            except AttributeError:
-                arcpy.AddError(f"Model class '{arch}' not found in ModelClasses")
-                return
-
-            model_wrapper: ModelClass = wrapper_class()
-            model = model_wrapper.get_model(backbone=backbone, state_dict=pth_path, image_size=img_size, num_classes=len(emd_classes) if emd_classes else 1)
-            arcpy.AddMessage("✓ Model architecture created")
-
-            # Test inference
-            arcpy.AddMessage("\n[3/3] Testing inference...")
-            model.eval()
-            test_input = torch.randn(1, 3, img_size, img_size)
-            with torch.no_grad():
-                output = model(test_input)
-
-            arcpy.AddMessage("✓ Inference test successful")
-            arcpy.AddMessage(f"  Input shape: {test_input.shape}")
-            if hasattr(output, "shape"):
-                arcpy.AddMessage(f"  Output shape: {output.shape}")
-            arcpy.AddMessage("\n" + "=" * 80)
-            arcpy.AddMessage("✓ Model validation passed!")
-            arcpy.AddMessage("=" * 80)
-
-        except Exception as e:
-            arcpy.AddError("\n" + "=" * 80)
-            arcpy.AddError("✗ Model validation failed!")
-            arcpy.AddError("=" * 80)
-            arcpy.AddError(f"\nError: {str(e)}")
-            import traceback
-            arcpy.AddError(traceback.format_exc())
-            raise
