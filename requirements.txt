@@ -22,3 +22,4 @@ huggingface-hub>=0.35.3
 # Utilities
 scipy
 tqdm>=4.67.1
+ipywidgets
