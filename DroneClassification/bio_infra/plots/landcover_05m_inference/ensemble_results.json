@@ -1,0 +1,40 @@
+{
+  "method": "gated_ensemble_gt",
+  "landcover_model": "..\\weights\\human_segformer.pth",
+  "gate": "ground_truth_labels",
+  "num_samples": 573,
+  "ensemble_classes": [
+    "background",
+    "building",
+    "woodland",
+    "water",
+    "road",
+    "mangrove"
+  ],
+  "overall_prediction_distribution": {
+    "background": 0.2742800064813286,
+    "building": 0.003694626715774772,
+    "woodland": 0.14754197298980898,
+    "water": 0.1894706652893935,
+    "road": 0.011759623349842175,
+    "mangrove": 0.37325310517385196
+  },
+  "predictions_on_mangrove_pixels": {
+    "background": 0.0,
+    "building": 0.0,
+    "woodland": 0.0,
+    "water": 0.0,
+    "road": 0.0,
+    "mangrove": 1.0
+  },
+  "predictions_on_non_mangrove_pixels": {
+    "background": 0.43762483507383076,
+    "building": 0.005894926239402617,
+    "woodland": 0.23540918065614883,
+    "water": 0.3023081037233545,
+    "road": 0.018762954307263303,
+    "mangrove": 0.0
+  },
+  "pixels_gated_to_mangrove": 40731534,
+  "gate_percentage": 27.116661670944453
+}
