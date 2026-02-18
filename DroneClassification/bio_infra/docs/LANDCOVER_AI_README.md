@@ -71,7 +71,7 @@ landcover.ai.v1/
 The dataset is pre-split using tile-based cross-validation:
 
 ### Tile Definition
-- **split.py** script converts large orthophotos into 512×512 pixel tiles
+- **split.py** script converts the large orthophotos into 512×512 pixel tiles
 - Each tile from each image gets a unique ID: `{image_name}_{tile_number}`
 - Example: `M-33-20-D-c-4-2_0`, `M-33-20-D-c-4-2_1`, etc.
 
