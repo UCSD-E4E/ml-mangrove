@@ -5,6 +5,7 @@ Run this from ArcGIS Pro's Python Command Prompt to verify installation
 import sys
 import os
 from pathlib import Path
+#hello
 
 def print_header(text):
     """Print formatted header"""
