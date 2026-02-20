@@ -264,7 +264,9 @@ class InterpretationResult:
             fontsize=12, y=1.01,
         )
         plt.tight_layout()
-        tmp = Path(tempfile.mktemp(suffix=".png"))
+        tmp_file = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
+        tmp = Path(tmp_file.name)
+        tmp_file.close()
         fig.savefig(tmp, dpi=150, bbox_inches="tight")
         plt.close(fig)
         _open_file(tmp)
@@ -393,7 +395,9 @@ def compare_methods(
         fig.savefig(save_path, dpi=dpi, bbox_inches="tight")
         plt.close(fig)
     else:
-        tmp = Path(tempfile.mktemp(suffix=".png"))
+        tmp_file = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
+        tmp = Path(tmp_file.name)
+        tmp_file.close()
         fig.savefig(tmp, dpi=dpi, bbox_inches="tight")
         plt.close(fig)
         _open_file(tmp)
