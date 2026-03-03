@@ -47,8 +47,8 @@ class JaccardLoss(nn.Module):
             self.ce = nn.CrossEntropyLoss(weight=weight, ignore_index=ignore_index, reduction='none')
             self.iou_weight = torch.sqrt(weight).to(weight.device) if isinstance(weight, torch.Tensor) else None
 
+        self.boundary_weight = boundary_weight
         if boundary_weight > 0.0:
-            self.boundary_weight = boundary_weight
             self.boundary_loss = ActiveBoundaryLoss(num_classes=num_classes, ignore_index=ignore_index)
     
     def forward(self, logits, labels):

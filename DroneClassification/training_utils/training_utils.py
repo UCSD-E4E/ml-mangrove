@@ -433,16 +433,18 @@ class TrainingSession:
                 'IoU': round(mean_iou, 4),
             }
         
-        return {
+        result = {
             'Pixel_Accuracy': round(pixel_accuracy, 4),
             'Precision': round(mean_precision, 4),
             'Recall': round(mean_recall, 4),
             'IoU': round(mean_iou, 4),
-            'Boundary_IoU': round(mean_boundary_iou, 4) if mean_boundary_iou is not None else None,
             'class_ious': np.round(class_ious, 4).tolist(),
             'class_precisions': np.round(class_precisions, 4).tolist(),
             'class_recalls': np.round(class_recalls, 4).tolist()
         }
+        if mean_boundary_iou is not None:
+            result['Boundary_IoU'] = round(mean_boundary_iou, 4)
+        return result
     
     def _calculate_chip_metrics(self, predictions, targets):
         """Calculate metrics for chip classification models."""
