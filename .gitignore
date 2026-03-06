@@ -17,3 +17,7 @@ DroneClassification/bio_infra/weights/*
 DroneClassification/bio_infra/data/cvat_export/*
 *.pth
 \0_5m
+Scale Adaption/GEE/Florida_Training_Dataset
+Scale Adaption/GEE/chip_cache
+Scale Adaption/GEE/experiments
+Observatory/data
