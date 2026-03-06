@@ -1,13 +1,13 @@
 'use client'
 
-import { useState, useRef, useCallback } from 'react'
+import { useState, useRef, useCallback, useEffect } from 'react'
 import dynamic from 'next/dynamic'
 import type { GlobeHandle } from '@/components/MangroveGlobe'
 import LandingOverlay from '@/components/LandingOverlay'
 import AnalyticsPanel from '@/components/AnalyticsPanel'
 import TimeSlider from '@/components/TimeSlider'
-import HoverTooltip from '@/components/HoverTooltip'
-import type { HoverInfo } from '@/lib/layerBuilder'
+import LoadingScreen from '@/components/LoadingScreen'
+import { warmPMTiles } from '@/lib/layerBuilder'
 import { AnimatePresence } from 'framer-motion'
 
 // MapLibre + Deck.gl must be client-only (they need window/WebGL)
@@ -16,15 +16,31 @@ const MangroveGlobe = dynamic(() => import('@/components/MangroveGlobe'), { ssr:
 const YEAR_MIN = 2023
 const YEAR_MAX = 2023
 
+type Stage = 'loading' | 'landing' | 'exploring'
+
 export default function Page() {
-  const [isLanding, setIsLanding] = useState(true)
-  const [hovered, setHovered] = useState<HoverInfo | null>(null)
+  const [stage, setStage] = useState<Stage>('loading')
   const [visibleFeatures, setVisibleFeatures] = useState<any[]>([])
   const [selectedYear, setSelectedYear] = useState(2023)
+  const [mapReady, setMapReady] = useState(false)
   const globeRef = useRef<GlobeHandle>(null)
 
+  // Kick off PMTiles header pre-fetch as early as possible
+  useEffect(() => {
+    warmPMTiles().catch(() => {/* non-fatal if it fails */})
+  }, [])
+
+  // Loading screen is done when map has fired its load event
+  const handleMapReady = useCallback(() => {
+    setMapReady(true)
+  }, [])
+
+  const handleLoadingComplete = useCallback(() => {
+    setStage('landing')
+  }, [])
+
   const handleExplore = useCallback(() => {
-    setIsLanding(false)
+    setStage('exploring')
     globeRef.current?.flyTo(-80.5, 25.5, 8)
   }, [])
 
@@ -34,23 +50,28 @@ export default function Page() {
 
   return (
     <div className="relative w-full bg-[#0d1117]" style={{ height: '100dvh' }}>
-      {/* Full-screen map */}
+      {/* Map is always mounted so it initialises behind the loading screen */}
       <MangroveGlobe
         ref={globeRef}
-        rotating={isLanding}
+        rotating={stage === 'landing'}
         selectedYear={selectedYear}
-        onHover={setHovered}
         onFeaturesChange={handleFeaturesChange}
+        onReady={handleMapReady}
       />
 
-      {/* Landing screen */}
+      {/* Loading screen — sits on top until map + PMTiles are warm */}
+      {stage === 'loading' && (
+        <LoadingScreen ready={mapReady} onComplete={handleLoadingComplete} />
+      )}
+
+      {/* Landing overlay */}
       <AnimatePresence>
-        {isLanding && <LandingOverlay onExplore={handleExplore} />}
+        {stage === 'landing' && <LandingOverlay onExplore={handleExplore} />}
       </AnimatePresence>
 
       {/* Post-landing UI */}
       <AnimatePresence>
-        {!isLanding && (
+        {stage === 'exploring' && (
           <>
             <AnalyticsPanel features={visibleFeatures} />
             <TimeSlider
@@ -63,8 +84,6 @@ export default function Page() {
         )}
       </AnimatePresence>
 
-      {/* Hover tooltip — always present, visibility controlled by hovered state */}
-      <HoverTooltip info={hovered} />
     </div>
   )
 }

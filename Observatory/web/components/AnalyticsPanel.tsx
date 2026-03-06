@@ -58,7 +58,7 @@ export default function AnalyticsPanel({ features }: AnalyticsPanelProps) {
       animate={{ x: 0, opacity: 1 }}
       transition={{ type: 'spring', stiffness: 120, damping: 20, delay: 0.1 }}
       className="fixed right-4 top-4 bottom-4 w-72 z-10 flex flex-col gap-4
-                 bg-black/50 backdrop-blur-2xl border border-white/10 rounded-2xl p-5 overflow-y-auto"
+                 bg-[#0a0f1a]/90 border border-white/10 rounded-2xl p-5 overflow-y-auto"
     >
       {/* Header */}
       <div>

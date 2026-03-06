@@ -49,21 +49,30 @@ export const CLASS_ICONS: Record<ClassName, string> = {
   'Mangrove':        '🌴',
 }
 
-/** Returns [r, g, b, a] for a given class name, defaulting to white. */
-export function getColor(className: string, alpha = 220): [number, number, number, number] {
-  const rgb = CLASS_COLORS[className as ClassName]
-  return rgb ? [...rgb, alpha] : [255, 255, 255, alpha]
+// Pre-computed RGBA tuples — allocated once at module load, reused on every feature render.
+// getFillColor is called for every visible feature on every frame; avoid heap allocation here.
+const FILL_COLOR_CACHE: Record<string, [number, number, number, number]> = {}
+for (const [name, [r, g, b]] of Object.entries(CLASS_COLORS)) {
+  FILL_COLOR_CACHE[name] = [r, g, b, 220]
+}
+const FALLBACK_COLOR: [number, number, number, number] = [255, 255, 255, 220]
+
+// Extrusion heights (metres, visually exaggerated for globe scale).
+// Mangrove height is dynamic (health_index × 500) — its entry here is unused.
+export const CLASS_ELEVATION: Record<ClassName, number> = {
+  'Mangrove':        0,    // overridden by health_index × 500
+  'Tree Cover':      120,
+  'Wetland':         60,
+  'Built-up':        150,
+  'Grassland':       25,
+  'Cropland':        15,
+  'Bare/Sparse Veg': 8,
+  'Water':           0,
 }
 
-/** Returns a brightened version of a class color for line/edge rendering. */
-export function getBrightColor(className: string, alpha = 255): [number, number, number, number] {
-  const [r, g, b] = getColor(className)
-  return [
-    Math.min(255, Math.round(r * 1.4)),
-    Math.min(255, Math.round(g * 1.4)),
-    Math.min(255, Math.round(b * 1.4)),
-    alpha,
-  ]
+/** Returns a pre-computed [r, g, b, a] tuple for a class name — zero allocation. */
+export function getColor(className: string): [number, number, number, number] {
+  return FILL_COLOR_CACHE[className] ?? FALLBACK_COLOR
 }
 
 /** Health index → color: green > 0.6, yellow 0.3–0.6, red < 0.3 */
