@@ -1,9 +1,10 @@
 'use client'
 
-import { useEffect, useRef, useImperativeHandle } from 'react'
+import { useState, useCallback, useEffect, useRef, useImperativeHandle } from 'react'
 import maplibregl from 'maplibre-gl'
 import { MapboxOverlay } from '@deck.gl/mapbox'
 import { buildMangroveLayer, HoverInfo } from '@/lib/layerBuilder'
+import HoverTooltip from '@/components/HoverTooltip'
 
 const MAPTILER_KEY = process.env.NEXT_PUBLIC_MAPTILER_KEY ?? ''
 
@@ -16,8 +17,8 @@ interface MangroveGlobeProps {
   ref?: React.Ref<GlobeHandle>
   rotating: boolean
   selectedYear: number
-  onHover: (info: HoverInfo | null) => void
   onFeaturesChange: (features: any[]) => void
+  onReady?: () => void
 }
 
 function getCentroid(geometry: { type: string; coordinates: any }): [number, number] | null {
@@ -38,14 +39,20 @@ export default function MangroveGlobe({
   ref,
   rotating,
   selectedYear,
-  onHover,
   onFeaturesChange,
+  onReady,
 }: MangroveGlobeProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const mapRef = useRef<maplibregl.Map | null>(null)
   const overlayRef = useRef<MapboxOverlay | null>(null)
   const rafRef = useRef<number>(0)
   const rotatingRef = useRef(rotating)
+  const pickTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const hoverRafRef = useRef<number | null>(null)
+  const pendingHoverRef = useRef<HoverInfo | null>(null)
+
+  // Hover state is internal — changes here never cause page.tsx to re-render
+  const [hovered, setHovered] = useState<HoverInfo | null>(null)
 
   // Keep rotatingRef in sync without re-running the map effect
   useEffect(() => {
@@ -65,14 +72,27 @@ export default function MangroveGlobe({
     },
   }))
 
-  // Rebuild Deck.gl layer when year or hover callbacks change
+  // RAF-throttled hover: Deck.gl fires onHover at native mousemove rate (100–200/sec).
+  // Funnelling through rAF caps React setState calls at the display refresh rate (~60fps).
+  // setHovered is stable (from useState), so this callback never changes — the layer is
+  // never rebuilt due to hover activity.
+  const throttledHover = useCallback((info: HoverInfo | null) => {
+    pendingHoverRef.current = info
+    if (hoverRafRef.current !== null) return
+    hoverRafRef.current = requestAnimationFrame(() => {
+      setHovered(pendingHoverRef.current)
+      hoverRafRef.current = null
+    })
+  }, []) // no deps — setHovered is stable
+
+  // Rebuild Deck.gl layer when year changes
   useEffect(() => {
     if (!overlayRef.current) return
     overlayRef.current.setProps({
       layers: [
         buildMangroveLayer({
           selectedYear,
-          onHover,
+          onHover: throttledHover,
           onClick: (info) => {
             if (!mapRef.current || !info.object) return
             const center = getCentroid(info.object.geometry)
@@ -82,7 +102,7 @@ export default function MangroveGlobe({
         }),
       ],
     })
-  }, [selectedYear, onHover])
+  }, [selectedYear, throttledHover])
 
   // Initialise map once on mount
   useEffect(() => {
@@ -107,7 +127,7 @@ export default function MangroveGlobe({
         layers: [
           buildMangroveLayer({
             selectedYear,
-            onHover,
+            onHover: throttledHover,
             onClick: (info) => {
               if (!info.object) return
               const center = getCentroid(info.object.geometry)
@@ -119,6 +139,7 @@ export default function MangroveGlobe({
       })
       map.addControl(overlay as any)
       overlayRef.current = overlay
+      onReady?.()
     })
 
     // Auto-rotation RAF loop
@@ -132,19 +153,23 @@ export default function MangroveGlobe({
 
     map.on('movestart', () => { rotatingRef.current = false })
     map.on('moveend', () => {
-      if (!overlayRef.current) return
-      const canvas = map.getCanvas()
-      const picked = overlayRef.current.pickObjects({
-        x: 0,
-        y: 0,
-        width: canvas.clientWidth,
-        height: canvas.clientHeight,
-      })
-      onFeaturesChange(picked.map((p: any) => p.object).filter(Boolean))
+      if (pickTimerRef.current) clearTimeout(pickTimerRef.current)
+      pickTimerRef.current = setTimeout(() => {
+        if (!overlayRef.current) return
+        const canvas = map.getCanvas()
+        const picked = overlayRef.current.pickObjects({
+          x: 0,
+          y: 0,
+          width: canvas.clientWidth,
+          height: canvas.clientHeight,
+        })
+        onFeaturesChange(picked.map((p: any) => p.object).filter(Boolean))
+      }, 300)
     })
 
     return () => {
       cancelAnimationFrame(rafRef.current)
+      if (pickTimerRef.current) clearTimeout(pickTimerRef.current)
       map.remove()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -153,6 +178,7 @@ export default function MangroveGlobe({
   return (
     <div className="absolute inset-0">
       <div ref={containerRef} style={{ width: '100%', height: '100%' }} />
+      <HoverTooltip info={hovered} />
     </div>
   )
 }

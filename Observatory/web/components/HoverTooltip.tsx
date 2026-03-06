@@ -23,7 +23,7 @@ export default function HoverTooltip({ info }: HoverTooltipProps) {
           className="pointer-events-none fixed z-50"
           style={{ left: info.x + 14, top: info.y + 14 }}
         >
-          <div className="bg-black/75 backdrop-blur-xl border border-white/10 rounded-xl px-4 py-3 shadow-2xl min-w-[200px]">
+          <div className="bg-[#0a0f1a]/95 border border-white/10 rounded-xl px-4 py-3 shadow-2xl min-w-[200px]">
             {/* Class header */}
             <div
               className="flex items-center gap-2 text-base font-semibold mb-2"

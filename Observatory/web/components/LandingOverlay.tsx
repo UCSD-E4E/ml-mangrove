@@ -50,7 +50,7 @@ export default function LandingOverlay({ onExplore }: LandingOverlayProps) {
   return (
     <div
       ref={overlayRef}
-      className="fixed inset-0 z-20 flex flex-col items-center justify-center bg-black/40 backdrop-blur-sm"
+      className="fixed inset-0 z-20 flex flex-col items-center justify-center bg-black/55"
     >
       {/* E4E badge */}
       <div ref={badgeRef} className="mb-10 opacity-0">
