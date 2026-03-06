@@ -1,0 +1,20 @@
+@import "tailwindcss";
+
+html,
+body {
+  height: 100dvh;
+  overflow: hidden;
+  background: #0d1117;
+}
+
+/* MapLibre overrides */
+.maplibregl-canvas {
+  outline: none;
+}
+
+/* Hide only the MapLibre attribution/logo — NOT the control containers
+   (deck.gl MapboxOverlay inserts its canvas via map.addControl into these containers) */
+.maplibregl-ctrl-attrib,
+.maplibregl-ctrl-logo {
+  display: none !important;
+}
