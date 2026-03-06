@@ -1,0 +1,33 @@
+{
+  "name": "web",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start"
+  },
+  "dependencies": {
+    "@deck.gl/core": "^9.2.10",
+    "@deck.gl/geo-layers": "^9.2.10",
+    "@deck.gl/layers": "^9.2.10",
+    "@deck.gl/mapbox": "^9.2.10",
+    "@loaders.gl/pmtiles": "^4.3.4",
+    "framer-motion": "^12.35.0",
+    "gsap": "^3.14.2",
+    "maplibre-gl": "^5.19.0",
+    "next": "16.1.6",
+    "pmtiles": "^4.4.0",
+    "react": "19.2.3",
+    "react-dom": "19.2.3"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4",
+    "@types/maplibre-gl": "^1.13.2",
+    "@types/node": "^20",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "tailwindcss": "^4",
+    "typescript": "^5"
+  }
+}
