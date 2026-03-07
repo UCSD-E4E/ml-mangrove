@@ -14,6 +14,46 @@ from typing import Callable, List, Optional, Union, Tuple
 from torch.amp.grad_scaler import GradScaler
 from torch.amp.autocast_mode import autocast
 import psutil
+import numpy as np
+from scipy.ndimage import binary_dilation
+
+def boundary_iou(gt_mask, pred_mask, dilation_ratio=0.02):
+    """
+    Compute Boundary IoU (from https://arxiv.org/abs/2103.16562).
+    """
+    # Calculate boundary width = 2% of image diagonal
+    H, W = gt_mask.shape
+    diag = np.sqrt(H**2 + W**2)
+    d = max(1, int(dilation_ratio * diag))
+
+    kernel = np.ones((3, 3), dtype=np.uint8)
+
+    def get_boundary(mask):
+        dil = binary_dilation(mask, structure=kernel, iterations=d)
+        return np.logical_and(dil, mask)
+
+    gt_boundary = get_boundary(gt_mask)
+    pred_boundary = get_boundary(pred_mask)
+
+    intersection = np.logical_and(gt_boundary, pred_boundary).sum()
+    union = np.logical_or(gt_boundary, pred_boundary).sum()
+
+    if union == 0:
+        return 1.0 if intersection == 0 else 0.0
+
+    return intersection / union
+
+class ChipClassificationMetrics:
+            """Simple metrics for chip classification tasks."""
+    
+            @staticmethod
+            def accuracy(pred_logits, labels):
+                preds = pred_logits.argmax(dim=1)
+                correct = (preds == labels).sum().item()
+                total = labels.numel()
+                return correct / total if total > 0 else 0.0
+
+
 
 def setup_device():
     """
@@ -74,7 +114,7 @@ class TrainingSession:
                  init_lr: float = 0.001, 
                  num_epochs: int = 10, 
                  device: Optional[torch.device] = None,
-                 validation_dataset_names: Optional[List[str]] = None,
+                 class_names: Optional[List[str]] = None,
                  epoch_print_frequency: int = 1,
                  optimizer: Optional[torch.optim.Optimizer] = None,
                  scheduler: Optional[torch.optim.lr_scheduler._LRScheduler] = None,
@@ -82,7 +122,9 @@ class TrainingSession:
                  experiment_name: str = None, # type: ignore
                  save_checkpoints: bool = True,
                  threshold: float = 0.5,
-                 ignore_index: int = 255):
+                 ignore_index: int = 255,
+                 validation_dataset_names: Optional[List[str]] = None,
+                 metric_mode: str = "segmentation"):
         
         self.trainLoader = trainLoader
         self.testLoader = testLoader
@@ -91,7 +133,7 @@ class TrainingSession:
         self.num_epochs = num_epochs
         self.device = setup_device() if device is None else device
         self.model = model.to(self.device)
-        self.validation_dataset_names = validation_dataset_names
+
         self.epoch_print_frequency = epoch_print_frequency
         self.optimizer = optimizer if optimizer else AdamW(self.model.parameters(), lr=self.init_lr, weight_decay=weight_decay)
         self.scheduler = scheduler if scheduler else optim.lr_scheduler.CosineAnnealingLR(self.optimizer, T_max=self.num_epochs)
@@ -100,20 +142,30 @@ class TrainingSession:
         self.threshold = threshold
         self.ignore_index = ignore_index
         self.num_classes = self.model.num_classes if hasattr(self.model, 'num_classes') else None
-
+        self.class_names = class_names
+        self.validation_dataset_names = validation_dataset_names
         self.scaler = GradScaler(device=self.device.type) if self.device.type in ['cuda', 'cpu'] else None
         self.batch_size = trainLoader.batch_size if trainLoader.batch_size is not None else 1
         self.training_loss = []
         self.metrics = []
 
+        self.metric_mode = metric_mode
+        self._metric_registry = {
+            "segmentation": self._calculate_segmentation_metrics,  # default
+            "boundary": self._calculate_segmentation_metrics,   # segmentation + Boundary IoU
+            "chip": self._calculate_chip_metrics,
+            "none": self._calculate_noop_metrics,                  # loss only
+        }
+ 
         # Multiple test loaders handling
-        if isinstance(testLoader, list):
+        if isinstance(testLoader, list) and len(testLoader) > 1:
             self.multiple_test_loaders = True
             if validation_dataset_names is not None and len(validation_dataset_names) != len(testLoader):
                 print("WARNING: Number of validation dataset names does not match the number of test loaders.")
                 self.validation_dataset_names = [f"Dataset {i + 1}" for i in range(len(testLoader))]
         else:
             self.multiple_test_loaders = False
+            self.validation_dataset_names = None
         
         # Best model tracking
         self.best_metric = 0.0
@@ -126,6 +178,34 @@ class TrainingSession:
             self.experiment_dir.mkdir(parents=True, exist_ok=True)
             self._setup_logging()
 
+
+    def _calculate_noop_metrics(self, *args, **kwargs) -> dict:
+        """Used when metric_mode='none' – returns no extra metrics (only Loss)."""
+        return {}
+
+    def _get_metric_fn(self) -> Callable:
+        """Return the metric function corresponding to the current metric_mode."""
+        metric_fn = self._metric_registry.get(self.metric_mode)
+        if metric_fn is None:
+            raise ValueError(
+                f"Unknown metric_mode '{self.metric_mode}'. "
+                f"Available modes: {list(self._metric_registry.keys())}"
+            )
+        return metric_fn
+
+    def _calculate_metrics(self, *args, **kwargs) -> dict:
+        """Main entry point for metrics inside evaluate()."""
+        metric_fn = self._get_metric_fn()
+        return metric_fn(*args, **kwargs)
+
+    def register_metric_fn(self, name: str, fn: Callable) -> None:
+        """
+        Register a custom metric function that can be selected
+        via metric_mode=name.
+        """
+        if not callable(fn):
+            raise TypeError("Metric function must be callable.")
+        self._metric_registry[name] = fn
 
     def learn(self):
         """ Training with logging and checkpointing
@@ -145,12 +225,12 @@ class TrainingSession:
                 for i, loader in enumerate(self.testLoader):
                     epoch_metrics.append(self.evaluate(loader))
                 self.metrics.append(epoch_metrics)
-                current_metric = epoch_metrics[-1].get('IOU', 0)
+                current_metric = epoch_metrics[-1].get('IoU', 0)
                 is_best = current_metric > self.best_metric
             else:
                 metrics = self.evaluate(self.testLoader)
                 self.metrics.append(metrics)
-                current_metric = metrics.get('IOU', 0)
+                current_metric = metrics.get('IoU', 0)
                 is_best = current_metric > self.best_metric
             
             if is_best:
@@ -174,8 +254,10 @@ class TrainingSession:
             self.logger.info(f"Training completed! Best metric: {self.best_metric:.4f} at epoch {self.best_epoch + 1}")
         
         self.plot_loss()
-        self.plot_metrics("Final Epoch Metrics", metrics=self.get_available_metrics())
-    
+
+        metrics_to_plot = [m for m in self.get_available_metrics() if not m.startswith('class_')]
+        self.plot_metrics("Metrics", metrics_wanted=metrics_to_plot)
+
     def _train_epoch(self, epoch):
         """Train single epoch"""
         self.model.train()
@@ -229,7 +311,7 @@ class TrainingSession:
             loss = self.lossFunc(pred, y)
             total_loss += loss.item()
 
-            metrics = self._calculate_segmentation_metrics(pred, y)
+            metrics = self._calculate_metrics(pred, y)
             
             for key, value in metrics.items():
                 if key in all_metrics:
@@ -248,6 +330,14 @@ class TrainingSession:
                 all_metrics[key] /= len(dataloader)
         
         all_metrics['Loss'] = total_loss / len(dataloader)
+
+        # Round metrics
+        for key in all_metrics:
+            if key.startswith('class_'):
+                all_metrics[key] = [round(v, 4) for v in all_metrics[key]]
+            else:
+                all_metrics[key] = float(round(all_metrics[key], 4))
+
         return all_metrics
 
     def _calculate_segmentation_metrics(self, predictions, targets):
@@ -272,6 +362,24 @@ class TrainingSession:
             else:
                 # One-hot encoded [B,C,H,W] -> [B,H,W] class indices
                 targets = torch.argmax(targets, dim=1)
+
+                # ---- Boundary IoU ----
+        # Only valid for binary segmentation (class count = 1 or 2)
+        if predictions.shape[1] == 1 or predictions.shape[1] == 2:
+            # Convert to numpy masks (0/1)
+            pred_np = pred_classes.cpu().numpy().astype(np.uint8)
+            target_np = targets.cpu().numpy().astype(np.uint8)
+
+            # Compute Boundary IoU per batch
+            boundary_scores = []
+            for b in range(pred_np.shape[0]):
+                boundary_scores.append(
+                    boundary_iou(target_np[b], pred_np[b])
+                )
+            mean_boundary_iou = float(np.mean(boundary_scores))
+        else:
+            mean_boundary_iou = None
+
 
         # Flatten tensors
         pred_flat = pred_classes.flatten()
@@ -299,41 +407,51 @@ class TrainingSession:
             target_mask = (target_flat == class_id)
             
             # Calculate intersection and union
-            tp = (pred_mask & target_mask).sum().float()
-            fp = (pred_mask & ~target_mask).sum().float()
-            fn = (~pred_mask & target_mask).sum().float()
-            
+            tp = (pred_mask & target_mask).sum().item()
+            fp = (pred_mask & ~target_mask).sum().item()
+            fn = (~pred_mask & target_mask).sum().item()
+
             # Metrics for this class
             precision = tp / (tp + fp + eps)
             recall = tp / (tp + fn + eps)
             iou = tp / (tp + fp + fn + eps)
-            
-            class_precisions[class_id] = precision.item()
-            class_recalls[class_id] = recall.item()
-            class_ious[class_id] = iou.item()
-        
+
+            class_precisions[class_id] = precision
+            class_recalls[class_id] = recall
+            class_ious[class_id] = iou
+
         # Aggregate metrics
-        mean_precision = np.mean(class_precisions).item()
-        mean_recall = np.mean(class_recalls).item()
-        mean_iou = np.mean(class_ious).item()
-        
+        mean_precision = np.mean(class_precisions)
+        mean_recall = np.mean(class_recalls)
+        mean_iou = np.mean(class_ious)
+
         if len(class_ious) == 1:
             return {
-                'Pixel_Accuracy': pixel_accuracy,
-                'Precision': mean_precision,
-                'Recall': mean_recall,
-                'IOU': mean_iou,
+                'Pixel_Accuracy': round(pixel_accuracy, 4),
+                'Precision': round(mean_precision, 4),
+                'Recall': round(mean_recall, 4),
+                'IoU': round(mean_iou, 4),
             }
         
-        return {
-            'Pixel_Accuracy': pixel_accuracy,
-            'Precision': mean_precision,
-            'Recall': mean_recall,
-            'IOU': mean_iou,
-            'class_ious': class_ious,
-            'class_precisions': class_precisions,
-            'class_recalls': class_recalls
+        result = {
+            'Pixel_Accuracy': round(pixel_accuracy, 4),
+            'Precision': round(mean_precision, 4),
+            'Recall': round(mean_recall, 4),
+            'IoU': round(mean_iou, 4),
+            'class_ious': np.round(class_ious, 4).tolist(),
+            'class_precisions': np.round(class_precisions, 4).tolist(),
+            'class_recalls': np.round(class_recalls, 4).tolist()
         }
+        if mean_boundary_iou is not None:
+            result['Boundary_IoU'] = round(mean_boundary_iou, 4)
+        return result
+    
+    def _calculate_chip_metrics(self, predictions, targets):
+        """Calculate metrics for chip classification models."""
+        metrics = {}
+        metrics["Accuracy"] = ChipClassificationMetrics.accuracy(predictions, targets)
+        return metrics
+
     
     def _setup_logging(self):
         """Setup experiment logging"""
@@ -348,8 +466,6 @@ class TrainingSession:
         )
         self.logger = logging.getLogger(self.experiment_name)
         
-        
-
         # get model attributes
         model_info = {'Name': str(self.model.__class__.__name__)}
         for attr in self.model.__dict__:
@@ -432,8 +548,8 @@ class TrainingSession:
         """Enhanced logging of epoch results"""
         if isinstance(val_metrics, list):
             # Multiple datasets
-            avg_loss = np.mean([m['Loss'] for m in val_metrics])
-            avg_metric = np.mean([m.get('Mean_IoU', m.get('IOU', 0)) for m in val_metrics])
+            avg_loss = round(np.mean([m['Loss'] for m in val_metrics]), 4)
+            avg_metric = round(np.mean([m.get('Mean_IoU', m.get('IoU', 0)) for m in val_metrics]), 4)
             log_msg = f"Epoch {epoch+1:3d} | Train Loss: {train_loss:.4f} | Val Loss: {avg_loss:.4f} | Avg Metric: {avg_metric:.4f}"
     
             if hasattr(self, 'logger'):
@@ -445,8 +561,8 @@ class TrainingSession:
                 print(log_msg)
         else:
             # Single dataset
-            val_loss = val_metrics['Loss']
-            main_metric = val_metrics.get('Mean_IoU', val_metrics.get('IOU', 0))
+            val_loss = round(val_metrics['Loss'], 4)
+            main_metric = round(val_metrics.get('Mean_IoU', val_metrics.get('IoU', 0)), 4)
             log_msg = f"Epoch {epoch+1:3d} | Train Loss: {train_loss:.4f} | Val Loss: {val_loss:.4f} | IoU: {main_metric:.4f}"
             
             if hasattr(self, 'logger'):
@@ -469,44 +585,57 @@ class TrainingSession:
             return []
         return self.metrics
 
-    def plot_metrics(self, title, metrics=('Precision','Recall','IOU')):
+    def plot_metrics(self, title, metrics_wanted=('Precision','Recall','IoU')):
         """Plot metrics with enhanced visualization"""
         if not self.metrics:
             print("No metrics to plot. Run training first.")
             return
-            
-        plt.figure(figsize=(12, 8))
-        
+
+        class_names = self.class_names if self.class_names else [f"Class {i}" for i in range(self.num_classes)] if self.num_classes else []
+
+        n_plots = 1 if not self.multiple_test_loaders else len(self.metrics[0])
         if self.multiple_test_loaders:
-            n_loaders = len(self.metrics[0])
-            names = (self.validation_dataset_names if self.validation_dataset_names and len(self.validation_dataset_names)==n_loaders
-                    else [f"Dataset {i+1}" for i in range(n_loaders)])
+            names = (self.validation_dataset_names if self.validation_dataset_names and len(self.validation_dataset_names)==n_plots
+                    else [f"Dataset {i+1}" for i in range(n_plots)])
+
+        for i in range(n_plots):
+            plt.figure(figsize=(12, 8))
             n_epochs = len(self.metrics)
             xs = np.arange(1, n_epochs+1)
-
-            for i in range(n_loaders):
-                for m in metrics:
-                    ys = [epoch_metrics[i].get(m, np.nan) for epoch_metrics in self.metrics]
-                    label = f"{names[i]} - {m}" if len(metrics) > 1 else f"{names[i]}"
-                    plt.plot(xs, ys, label=label, marker='o', markersize=3)
-        else:
-            n_epochs = len(self.metrics)
-            xs = np.arange(1, n_epochs+1)
-            for m in metrics:
-                ys = [epoch_dict.get(m, np.nan) if isinstance(epoch_dict, dict) else np.nan for epoch_dict in self.metrics]
-                plt.plot(xs, ys, label=m, marker='o', markersize=3)
-
-        plt.title(title, fontsize=14)
-        plt.xlabel("Epoch")
-        plt.ylabel("Value")
-        plt.legend(loc="lower right")
-        plt.grid(True, alpha=0.3)
-        plt.ylim(0, 1.1)
+            
+            for m in metrics_wanted:
+                metric_value = self.metrics[-1].get(m, None)
+                if metric_value is None:
+                    continue
         
-        if hasattr(self, 'experiment_dir') and self.save_checkpoints:
-            plt.savefig(self.experiment_dir / f'{title.replace(" ", "_").lower()}.png', 
-                       dpi=150, bbox_inches='tight')
-        plt.show()
+                if m.startswith('class_') and isinstance(metric_value, list): # plot each class
+                    while len(metric_value) > len(class_names):
+                        class_names.append(f"Class {len(class_names)+1}")
+                    for class_id, class_name in enumerate(class_names):
+                        plt.plot(xs, [epoch_metrics.get(m, np.nan)[class_id] for epoch_metrics in self.metrics],
+                                 label=f"{m} - {class_name}", marker='o', markersize=3)
+                else: # Plot overall metric
+                    ys = [epoch_metrics.get(m, np.nan) for epoch_metrics in self.metrics]
+                    plt.plot(xs, ys, label=f"{m}", marker='o', markersize=3, linewidth=2)
+            
+            if self.multiple_test_loaders:
+                plt.title(f"{title} - {names[i]}", fontsize=14)
+            else:
+                plt.title(title, fontsize=14)
+            
+            plt.xlabel("Epoch")
+            plt.ylabel("Value")
+            plt.legend(loc="lower right")
+            plt.grid(True, alpha=0.3)
+            plt.ylim(0, 1.1)
+            
+            if hasattr(self, 'experiment_dir') and self.save_checkpoints:
+                if self.multiple_test_loaders:
+                    plot_name = f'{title.replace(" ", "_").lower()}_{names[i].replace(" ", "_").lower()}.png'
+                else:
+                    plot_name = f'{title.replace(" ", "_").lower()}.png'
+                plt.savefig(self.experiment_dir / plot_name, dpi=150, bbox_inches='tight')
+            plt.show()
 
     def plot_loss(self, title: str = "Training and Validation Loss", y_max: float = 1.0, training_time=None):
         """Enhanced loss plotting"""

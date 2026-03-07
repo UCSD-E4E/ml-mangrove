@@ -10,5 +10,14 @@ __pycache__/
 *.cpython-310.pyc
 */__pycache__
 .venv/
-*.pth
 .vscode/settings.json
+DroneClassification/bio_infra/data/landcover.ai.v1/*
+DroneClassification/bio_infra/data/0_5m/*
+DroneClassification/bio_infra/weights/*
+DroneClassification/bio_infra/data/cvat_export/*
+*.pth
+\0_5m
+Scale Adaption/GEE/Florida_Training_Dataset
+Scale Adaption/GEE/chip_cache
+Scale Adaption/GEE/experiments
+Observatory/data

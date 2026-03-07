@@ -1,21 +1,9 @@
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
-from torchvision import models
-from enum import Enum
-from typing import List, Optional, Tuple
+from typing import Optional
+from .utils import *
 
-class LandmassLoss(nn.Module):
-    """
-    A Loss function to encourage the model to accurately predict the overall mangrove coverage in the image.
-
-    This will allow the model to train on the overall size of the mangrove area, rather than individual pixels.
-    It is also a very simple calculation - essentially the normalized absolute difference.
-    """
-    def __init__(self):
-        super(LandmassLoss, self).__init__()
-    def forward(self, prediction, target):
-        return (prediction.sum() - target.sum()) / (target.sum() + 1)
 class JaccardLoss(nn.Module):
     """
     Jaccard Loss (IoU Loss) for segmentation
@@ -23,14 +11,15 @@ class JaccardLoss(nn.Module):
     Combined with Cross-Entropy/BCE loss for better gradient flow
     """
     def __init__(self, num_classes=1, ignore_index=255, smooth=1e-6, 
-                 weight: Optional[torch.Tensor] = None, alpha=0.5):
+                 weight: Optional[torch.Tensor] = None, alpha=0.5, boundary_weight=0.0):
         """
         Args:
             num_classes: Number of segmentation classes
             ignore_index: Index to ignore in loss calculation (default: 255)
             smooth: Smoothing factor to avoid division by zero
             weight: Optional class weights for handling imbalance
-            alpha: Weight between CE and Jaccard loss (0.5 = equal weight)
+            alpha: Weight between CE and Jaccard loss (0.5 = equal weight. Higher alpha = more CE focus)
+            boundary_weight: Weight for Active Boundary Loss component (0.0 = no boundary loss)
         """
         super(JaccardLoss, self).__init__()
         self.num_classes = num_classes
@@ -47,6 +36,8 @@ class JaccardLoss(nn.Module):
                     print(f"Warning: weight shape of {weight.shape} is invalid for binary classification, ignoring weight")
                     weight = None
             self.ce = nn.BCEWithLogitsLoss(pos_weight=weight, reduction='none')
+            # store processed weight for later IoU/Jaccard computations
+            self.iou_weight = torch.sqrt(weight).to(weight.device) if isinstance(weight, torch.Tensor) else None
         else:
             # Multi-class segmentation
             if weight is not None:
@@ -54,6 +45,11 @@ class JaccardLoss(nn.Module):
                     print(f"Warning: weight shape of {weight.shape} is invalid for {num_classes} classes, ignoring weight")
                     weight = None
             self.ce = nn.CrossEntropyLoss(weight=weight, ignore_index=ignore_index, reduction='none')
+            self.iou_weight = torch.sqrt(weight).to(weight.device) if isinstance(weight, torch.Tensor) else None
+
+        self.boundary_weight = boundary_weight
+        if boundary_weight > 0.0:
+            self.boundary_loss = ActiveBoundaryLoss(num_classes=num_classes, ignore_index=ignore_index)
     
     def forward(self, logits, labels):
         """
@@ -64,6 +60,10 @@ class JaccardLoss(nn.Module):
         Returns:
             Combined loss: alpha * CE + (1 - alpha) * Jaccard
         """
+        logits = logits.float()
+        labels = labels.long()
+
+        num_classes = logits.shape[1]
         # Ensure labels are [B, H, W]
         if labels.dim() == 4 and labels.shape[1] == 1:
             labels = labels.squeeze(1)
@@ -72,7 +72,7 @@ class JaccardLoss(nn.Module):
         valid_mask = (labels != self.ignore_index)
         
         # --- Cross-Entropy / BCE Loss ---
-        if self.num_classes > 1:
+        if num_classes > 1:
             ce_loss = self.ce(logits, labels)
             ce_loss = (ce_loss * valid_mask).sum() / (valid_mask.sum() + self.smooth)
         else:
@@ -80,7 +80,7 @@ class JaccardLoss(nn.Module):
             ce_loss = (ce_loss * valid_mask).sum() / (valid_mask.sum() + self.smooth)
         
         # --- Jaccard (IoU) Loss ---
-        if self.num_classes == 1:
+        if num_classes == 1:
             # Binary segmentation
             probs = torch.sigmoid(logits.squeeze(1))
             
@@ -117,30 +117,321 @@ class JaccardLoss(nn.Module):
             iou_per_class = (intersection + self.smooth) / (union + self.smooth)
             
             # Average IoU across classes
-            iou = iou_per_class.mean()
-        
+            iou = (iou_per_class * self.iou_weight).sum() / (self.iou_weight.sum() + self.smooth) if self.iou_weight is not None else iou_per_class.mean()
+
         jaccard_loss = 1 - iou
         
+        if self.boundary_weight > 0.0:
+            boundary_loss_value = self.boundary_loss(logits, labels)
+            if boundary_loss_value is not None and boundary_loss_value > 0:
+                jaccard_loss = (1-self.boundary_weight) * jaccard_loss + self.boundary_weight * boundary_loss_value
+        
         # Combined loss
-        total_loss = self.alpha * ce_loss + (1 - self.alpha) * jaccard_loss
-        
-        return total_loss
+        return self.alpha * ce_loss + (1 - self.alpha) * jaccard_loss
 
-class FocalJaccardLoss(nn.Module):
-    """
-    Focal Jaccard Loss - focuses on hard examples by applying a focal term to the Jaccard loss
-    """
-    def __init__(self, num_classes=1, ignore_index=255, smooth=1e-6):
-        super(FocalJaccardLoss, self).__init__()
-        self.jaccard_loss = JaccardLoss(num_classes, ignore_index, smooth)
-        self.focal = FocalTverskyLoss(alpha=0.7, beta=0.3, gamma=0.75, smooth=smooth)
+class DiceLoss(nn.Module):
+    def __init__(self, num_classes=1, weights=None, smooth=1e-5, ignore_index=255):
+        super(DiceLoss, self).__init__()
+        self.smooth = smooth
+        self.num_classes = num_classes
+        self.ignore_index = ignore_index
+
+        if num_classes == 1:
+            if weights is not None and weights.shape[0] == 2:
+                weights = weights[1].float()
+            self.ce = nn.BCEWithLogitsLoss(pos_weight=weights) if weights is not None else nn.BCEWithLogitsLoss()
+        else:
+            self.ce = nn.CrossEntropyLoss(weight=weights, ignore_index=ignore_index)
+
+    def forward(self, logits, labels):
+        logits = logits.float()
+        labels = labels.long()
+
+        if labels.dim() == 4 and labels.shape[1] == 1:
+            labels = labels.squeeze(1)
+
+        num_classes = logits.shape[1]
         
-    def forward(self, predictions, targets):
-        jaccard = self.jaccard_loss(predictions, targets)
-        focal = self.focal(predictions, targets)
-        focal_jaccard = 0.6 * jaccard + 0.4 * focal
-        return focal_jaccard
+        # CE Loss - let PyTorch handle ignore_index
+        if num_classes > 1:
+            ce_loss = self.ce(logits, labels)
+        else:
+            valid_mask = (labels != self.ignore_index)
+            ce_loss = self.ce(logits.squeeze(1), labels.float())
+            ce_loss = (ce_loss * valid_mask).sum() / (valid_mask.sum() + self.smooth)
+        
+        # Dice Loss - mask out ignore_index
+        valid_mask = (labels != self.ignore_index)
+        
+        if num_classes > 1:
+            dice_loss = 0
+            for i in range(num_classes):
+                probs = torch.sigmoid(logits[:, i, :, :])
+                target = ((labels == i) & valid_mask).float()
+                probs_flat = probs.reshape(-1)
+                target_flat = target.reshape(-1)
+                intersection = (probs_flat * target_flat).sum()
+                dice = (2. * intersection + self.smooth) / (probs_flat.sum() + target_flat.sum() + self.smooth)
+                dice_loss += (1 - dice)
+        else:
+            probs = torch.sigmoid(logits.squeeze(1))
+            target = (labels * valid_mask).float()
+            intersection = (probs * target).sum()
+            dice = (2. * intersection + self.smooth) / (probs.sum() + target.sum() + self.smooth)
+            dice_loss = 1 - dice
+
+        return 0.5 * dice_loss + 0.5 * ce_loss
     
+class DiceJaccardLoss(nn.Module):
+    def __init__(self, num_classes=1, weights=None, smooth=1e-5, ignore_index=255):
+        super(DiceJaccardLoss, self).__init__()
+        self.jaccard_loss = JaccardLoss(num_classes=num_classes, ignore_index=ignore_index, weight=weights, smooth=smooth, alpha=0.6)
+
+    def forward(self, logits, labels):
+        logits = logits.float()
+        labels = labels.long()
+
+        if labels.dim() == 4 and labels.shape[1] == 1:
+            labels = labels.squeeze(1)
+        valid_mask = (labels != self.ignore_index)
+        num_classes = logits.shape[1]
+        
+        if num_classes > 1:
+            dice_loss = 0
+            for i in range(num_classes):
+                probs = torch.sigmoid(logits[:, i, :, :])
+                target = ((labels == i) & valid_mask).float()
+                probs_flat = probs.reshape(-1)
+                target_flat = target.reshape(-1)
+                intersection = (probs_flat * target_flat).sum()
+                dice = (2. * intersection + self.smooth) / (probs_flat.sum() + target_flat.sum() + self.smooth)
+                dice_loss += (1 - dice)
+        else:
+            probs = torch.sigmoid(logits.squeeze(1))
+            target = (labels * valid_mask).float()
+            intersection = (probs * target).sum()
+            dice = (2. * intersection + self.smooth) / (probs.sum() + target.sum() + self.smooth)
+            dice_loss = 1 - dice
+        
+        jaccard = self.jaccard_loss(logits, labels)
+        return 0.3 * dice_loss + 0.7 * jaccard
+
+class ActiveBoundaryLoss(nn.Module):
+    """
+    Multi-class compatible Active Boundary Loss. It helps sharpen boundaries by computing the KL divergence between them.
+    This is especially hepful for thin structures.
+
+    This is a vectorized implementation of the Active Boundary Loss described in:
+    "Active Boundary Loss for Semantic Segmentation" https://arxiv.org/abs/2102.02696
+
+    - logits: [B, C, H, W]
+    - target: [B, H, W] with values in {0..num_classes-1} or ignore_index
+    """
+    def __init__(
+        self,
+        num_classes: int,
+        ignore_index: int = 255,
+        max_N_ratio: float = 1/100,
+        max_clip_dist: float = 20.0,
+        detach_kl: bool = True,
+    ):
+        super().__init__()
+
+        self.num_classes = num_classes
+        self.ignore_index = ignore_index
+        self.max_N_ratio = max_N_ratio
+        self.max_clip_dist = max_clip_dist
+        self.detach_kl = detach_kl
+
+        # CE over 8 directions
+        self.criterion = nn.CrossEntropyLoss(reduction="none")
+
+        # 9 offsets (8 dirs + center)
+        self.offsets: torch.Tensor
+        self.register_buffer(
+            "offsets",
+            torch.tensor([
+                [ 1, 0],
+                [-1, 0],
+                [ 0,-1],
+                [ 0, 1],
+                [-1, 1],
+                [ 1, 1],
+                [-1,-1],
+                [ 1,-1],
+                [ 0, 0],  # center (ignored)
+            ], dtype=torch.long)
+        )
+
+
+    # ------------------------------------------------------------
+    # GT → boundary mask
+    # ------------------------------------------------------------
+    def gt2boundary(self, target):
+        B, H, W = target.shape
+
+        # vertical changes
+        vert = torch.zeros_like(target, dtype=torch.bool)
+        vert[:, 1:] = target[:, 1:] != target[:, :-1]
+
+        # horizontal changes
+        horiz = torch.zeros_like(target, dtype=torch.bool)
+        horiz[:, :, 1:] = target[:, :, 1:] != target[:, :, :-1]
+
+        boundary = vert | horiz
+        boundary |= (target == self.ignore_index)
+
+        return boundary.unsqueeze(1)     # [B,1,H,W]
+
+
+    # ------------------------------------------------------------
+    # Predicted KL-based boundary
+    # ------------------------------------------------------------
+    def logits2boundary(self, prob):
+        B, C, H, W = prob.shape
+
+        # compute pairwise KL spikes
+        kl_ud = kl_div(prob[:, :, 1:, :], prob[:, :, :-1, :]).sum(1, keepdim=True)
+        kl_lr = kl_div(prob[:, :, :, 1:], prob[:, :, :, :-1]).sum(1, keepdim=True)
+
+        kl_map = F.pad(kl_ud, (0,0,0,1)) + F.pad(kl_lr, (0,1,0,0))
+
+        # adaptive threshold
+        eps = 1e-5
+        max_N = H * W * self.max_N_ratio
+
+        with torch.no_grad():
+            while True:
+                mask = kl_map > eps
+                if mask.sum() > max_N:
+                    eps *= 1.2
+                else:
+                    break
+
+        # dilate to stabilize edges
+        mask = mask.float()
+        mask = F.max_pool2d(mask, 3, 1, 1) > 0
+
+
+        return mask.squeeze(1)      # [B,H,W] bool
+
+
+    # ------------------------------------------------------------
+    # Fast signed distance via repeated 3×3 erosions (DT approx)
+    # ------------------------------------------------------------
+    def get_dist_maps(self, boundary_mask):
+        """
+        boundary_mask: [B,1,H,W] or [B,H,W]
+        Returns [B,H,W] signed distances (negative inside).
+        """
+
+        if boundary_mask.dim() == 4:
+            boundary_mask = boundary_mask[:,0]
+
+        B, H, W = boundary_mask.shape
+        device = boundary_mask.device
+
+        # distance accumulates iterations
+        dist = torch.zeros((B, H, W), device=device)
+
+        # working mask: 1=inside, 0=boundary/holes
+        active = (~boundary_mask).float()
+
+        # iterate approx EDT (fixed 20 steps max)
+        for i in range(1, 21):
+            new_active = F.max_pool2d(active.unsqueeze(1), 3, 1, 1).squeeze(1)
+            delta = (active > 0) & (new_active < active)
+            if not delta.any():
+                break
+            active[delta] = 0
+            dist[delta] = float(i)
+
+        return dist
+
+
+    # ------------------------------------------------------------
+    # FULL LOSS FORWARD
+    # ------------------------------------------------------------
+    def forward(self, logits, target):
+        B, C, H, W = logits.shape
+        device = logits.device
+
+        # resize if needed
+        if logits.shape[2:] != target.shape[1:]:
+            logits = F.interpolate(logits, target.shape[1:], mode="bilinear", align_corners=True)
+
+        prob = logits.softmax(dim=1)
+
+        gt_bnd  = self.gt2boundary(target)
+        pred_bnd = self.logits2boundary(prob)
+
+        # nothing predicted
+        if pred_bnd.sum() == 0:
+            return None
+
+        # signed distance
+        dist = self.get_dist_maps(gt_bnd)   # [B,H,W]
+
+        # gather boundary coords (fix batch=1 issue)
+        coords = torch.nonzero(pred_bnd, as_tuple=False)
+
+        if coords.numel() == 0:
+            return None
+
+        # coords shape can be [K,2] or [K,3]
+        if coords.shape[1] == 2:
+            b_idx = torch.zeros(coords.size(0), dtype=torch.long, device=device)
+            y_idx = coords[:,0]
+            x_idx = coords[:,1]
+        elif coords.shape[1] == 3:
+            b_idx, y_idx, x_idx = coords.T
+        else:
+            raise RuntimeError(f"Unexpected coords shape {coords.shape}")
+
+        K = coords.size(0)
+
+        # offsets to neighbors
+        off = self.offsets.to(device)    # [9,2]
+
+        oy = (y_idx[:,None] + off[:,0]).clamp(0, H-1)
+        ox = (x_idx[:,None] + off[:,1]).clamp(0, W-1)
+
+        # distances for GT direction
+        dist_vals = dist[b_idx[:,None], oy, ox]    # [K,9]
+        dir_gt = torch.argmin(dist_vals, dim=1)
+        valid = (dir_gt != 8)
+
+        if not valid.any():
+            return None
+
+        dir_gt = dir_gt[valid]
+        oy8 = oy[valid, :8]
+        ox8 = ox[valid, :8]
+        b_valid = b_idx[valid]
+        y_valid = y_idx[valid]
+        x_valid = x_idx[valid]
+
+        # KL(center || neighbors)
+        prob_hw = prob.permute(0,2,3,1)  # [B,H,W,C]
+
+        center = prob_hw[b_valid, y_valid, x_valid]       # [K,C]
+        neigh  = prob_hw[b_valid[:,None], oy8, ox8]       # [K,8,C]
+
+        if self.detach_kl:
+            neigh = neigh.detach()
+
+        kl_vals = kl_div(center.unsqueeze(1).expand_as(neigh)+1e-8, neigh).sum(dim=2)  # [K,8]
+
+        # distance weights
+        w = -dist[b_valid, y_valid, x_valid]
+        w = torch.clamp(w / self.max_clip_dist, 0, 1)
+
+        # CE over 8 directions
+        loss = self.criterion(kl_vals, dir_gt)
+        loss = (loss * w).mean()
+
+        return loss
+
 class FocalTverskyLoss(nn.Module):
     """
     Focal Tversky Loss - excellent for punishing false negatives
@@ -182,202 +473,6 @@ class FocalTverskyLoss(nn.Module):
         focal_tversky = (1 - tversky) ** self.gamma
         
         return focal_tversky
-
-class PerceptualLoss(nn.Module):
-    def __init__(self):
-        super().__init__()
-        vgg = models.vgg16(weights=models.VGG16_Weights.IMAGENET1K_V1).eval()
-        for param in vgg.parameters():
-            param.requires_grad = False
-        self.vgg = vgg
-
-    def forward(self, fake, real):
-        f_fake = self.vgg(fake)
-        f_real = self.vgg(real)
-        return F.l1_loss(f_fake, f_real)
-
-class _ConvNextType(Enum):
-    """Available ConvNext model types"""
-    TINY = "tiny"
-    SMALL = "small"
-    BASE = "base"
-    LARGE = "large"
-
-class ConvNextPerceptualLoss(nn.Module):
-    """
-    Taken from https://github.com/sypsyp97/convnext_perceptual_loss/tree/main
-    Perceptual loss using pretrained ConvNext model.
-    Extracts features from specified layers and computes loss based on feature differences.
-    
-    Args:
-        device (torch.device): Device to run the model on (e.g., 'cuda' or 'cpu')
-        model_type (ConvNextType): Type of ConvNext model to use (tiny, small, base, large)
-        feature_layers (List[int]): Indices of layers to extract features from
-        feature_weights (Optional[List[float]]): Weights for each feature layer. If None, weights are computed with decay.
-        use_gram (bool): Whether to use Gram matrix for style loss
-        input_range (Tuple[float, float]): Expected input range for normalization
-        layer_weight_decay (float): Decay factor for layer weights if feature_weights is None
-
-        @misc{convnext_perceptual_loss2024,
-        title={ConvNext Perceptual Loss: A Modern Perceptual Loss Implementation},
-        author={Yipeng Sun},
-        year={2024},
-        publisher={GitHub},
-        journal={GitHub repository},
-        howpublished={url{https://github.com/sypsyp97/convnext_perceptual_loss}},
-        doi={10.5281/zenodo.13991193}
-}
-        """
-    def __init__(
-        self, 
-        device: torch.device,
-        model_type: _ConvNextType = _ConvNextType.TINY,
-        feature_layers: List[int] = [0, 2, 4, 6, 8, 10, 12, 14],
-        feature_weights: Optional[List[float]] = None,
-        use_gram: bool = True,
-        input_range: Tuple[float, float] = (-1, 1),
-        layer_weight_decay: float = 1.0
-    ):
-        """Initialize perceptual loss module"""
-        super().__init__()
-        
-        self.device = device
-        self.input_range = input_range
-        self.use_gram = use_gram
-        self.feature_layers = feature_layers
-        
-        # Calculate weights with decay if not specified
-        if feature_weights is None:
-            decay_values = [layer_weight_decay ** i for i in range(len(feature_layers))]
-            weights = torch.tensor(decay_values, device=device, dtype=torch.float32)
-            weights = weights / weights.sum()
-        else:
-            weights = torch.tensor(feature_weights, device=device, dtype=torch.float32)
-        
-        assert len(feature_layers) == len(weights), "Number of feature layers must match number of weights"
-        self.register_buffer("feature_weights", weights)
-        
-        # Load pretrained ConvNext model
-        model_name = f"convnext_{model_type.value}"
-        try:
-            weights_enum = getattr(models, f"ConvNeXt_{model_type.value.capitalize()}_Weights")
-            weights = weights_enum.DEFAULT
-            model = getattr(models, model_name)(weights=weights)
-        except (AttributeError, ImportError):
-            model = getattr(models, model_name)(pretrained=True)
-
-        # Extract blocks and ensure they're in eval mode
-        self.blocks = nn.ModuleList()
-        for stage in model.features:
-            if isinstance(stage, nn.Sequential):
-                self.blocks.extend(stage)
-            else:
-                self.blocks.append(stage)
-        
-        self.blocks = self.blocks.eval().to(device)
-        # Don't freeze parameters but set requires_grad=False since we don't update them
-        for param in self.blocks.parameters():
-            param.requires_grad_(False)
-        
-        # Register normalization parameters
-        self.register_buffer(
-            "mean", 
-            torch.tensor([0.485, 0.456, 0.406], device=device).view(1, 3, 1, 1)
-        )
-        self.register_buffer(
-            "std", 
-            torch.tensor([0.229, 0.224, 0.225], device=device).view(1, 3, 1, 1)
-        )
-        
-        self.to(device)
-
-    def normalize_input(self, x: torch.Tensor) -> torch.Tensor:
-        """Normalize input tensor"""
-        x = x.to(self.device)
-        
-        if x.shape[1] == 1:
-            x = x.repeat(1, 3, 1, 1)
-        
-        # Ensure we create new leaf tensors while maintaining gradient flow
-        x = x - torch.tensor(0., device=self.device)  # Create new leaf tensor
-        
-        min_val, max_val = self.input_range
-        x = (x - min_val) / (max_val - min_val)
-        mean = self.mean if isinstance(self.mean, torch.Tensor) else torch.tensor(self.mean, device=self.device)
-        std = self.std if isinstance(self.std, torch.Tensor) else torch.tensor(self.std, device=self.device)
-        x = (x - mean) / std
-        
-        if x.requires_grad:
-            x.retain_grad()  # Retain gradients for intermediate values
-            
-        return x
-
-    def gram_matrix(self, x: torch.Tensor, normalize: bool = True) -> torch.Tensor:
-        """Compute Gram matrix of feature maps"""
-        b, c, h, w = x.size()
-        features = x.view(b, c, -1)
-        gram = torch.bmm(features, features.transpose(1, 2))
-        if normalize:
-            gram = gram / (c * h * w)
-        return gram
-    
-    def compute_feature_loss(
-        self, 
-        input_features: List[torch.Tensor],
-        target_features: List[torch.Tensor],
-        layers_indices: List[int],
-        weights: torch.Tensor
-    ) -> torch.Tensor:
-        """Compute feature loss ensuring scalar output"""
-        losses = []
-        
-        for idx, weight in zip(layers_indices, weights):
-            input_feat = input_features[idx]
-            target_feat = target_features[idx].detach()  # Detach target features
-            
-            if self.use_gram:
-                input_gram = self.gram_matrix(input_feat)
-                target_gram = self.gram_matrix(target_feat)
-                layer_loss = nn.functional.l1_loss(input_gram, target_gram)
-            else:
-                layer_loss = nn.functional.mse_loss(input_feat, target_feat)
-            
-            losses.append(weight * layer_loss)
-            
-        # Sum all losses and ensure scalar output
-        return torch.stack(losses).sum()
-
-    def forward(
-        self, 
-        input: torch.Tensor,
-        target: torch.Tensor
-    ) -> torch.Tensor:
-        """Forward pass to compute loss"""
-        input = input.to(self.device)
-        target = target.to(self.device)
-        
-        input = self.normalize_input(input)
-        target = self.normalize_input(target)
-        
-        # Extract features
-        input_features = []
-        target_features = []
-        
-        x_input = input
-        x_target = target
-        for block in self.blocks:
-            x_input = block(x_input)
-            with torch.no_grad():  # No need to compute gradients for target features
-                x_target = block(x_target)
-            input_features.append(x_input)
-            target_features.append(x_target)
-        
-        loss = self.compute_feature_loss(
-            input_features, target_features,
-            self.feature_layers, self.feature_weights # type: ignore
-        )
-        
-        return loss
 
 class FocalLoss(nn.Module):
     """
@@ -508,3 +603,15 @@ class WeightedMultiClassFocalLoss(nn.Module):
             focal_loss = focal_loss.sum()
         
         return focal_loss
+
+class LandmassLoss(nn.Module):
+    """
+    A Loss function to encourage the model to accurately predict the overall mangrove coverage in the image.
+
+    This will allow the model to train on the overall size of the mangrove area, rather than individual pixels.
+    It is also a very simple calculation - essentially the normalized absolute difference.
+    """
+    def __init__(self):
+        super(LandmassLoss, self).__init__()
+    def forward(self, prediction, target):
+        return (prediction.sum() - target.sum()) / (target.sum() + 1)
