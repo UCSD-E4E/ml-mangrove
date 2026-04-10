@@ -97,7 +97,7 @@ export function buildMangroveLayer({ selectedYear, onHover, onClick }: LayerOpti
 
     renderSubLayers: (props: any) => {
       const zoom: number = props.tile?.index?.z ?? 0
-      const shouldExtrude = zoom >= 11
+      const shouldExtrude = zoom >= 13
 
       return new GeoJsonLayer({
         ...props,

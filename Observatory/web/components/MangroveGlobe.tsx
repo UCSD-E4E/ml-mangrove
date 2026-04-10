@@ -50,13 +50,28 @@ export default function MangroveGlobe({
   const pickTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const hoverRafRef = useRef<number | null>(null)
   const pendingHoverRef = useRef<HoverInfo | null>(null)
+  // Track whether a zoom gesture is in progress so we can skip pickObjects during zoom
+  const zoomingRef = useRef(false)
 
   // Hover state is internal — changes here never cause page.tsx to re-render
   const [hovered, setHovered] = useState<HoverInfo | null>(null)
 
-  // Keep rotatingRef in sync without re-running the map effect
+  // Keep rotatingRef in sync. When rotation is re-enabled, restart the RAF loop
+  // if it isn't already running.
   useEffect(() => {
     rotatingRef.current = rotating
+    if (rotating && rafRef.current === 0 && mapRef.current) {
+      const map = mapRef.current
+      const rotate = () => {
+        if (rotatingRef.current && mapRef.current) {
+          map.setBearing((map.getBearing() + 0.025) % 360)
+          rafRef.current = requestAnimationFrame(rotate)
+        } else {
+          rafRef.current = 0
+        }
+      }
+      rafRef.current = requestAnimationFrame(rotate)
+    }
   }, [rotating])
 
   // Expose flyTo via ref (React 19 style)
@@ -123,7 +138,7 @@ export default function MangroveGlobe({
     map.on('load', () => {
       // Deck.gl overlay
       const overlay = new MapboxOverlay({
-        interleaved: false,
+        interleaved: true,
         layers: [
           buildMangroveLayer({
             selectedYear,
@@ -142,29 +157,43 @@ export default function MangroveGlobe({
       onReady?.()
     })
 
-    // Auto-rotation RAF loop
+    // Auto-rotation RAF loop — only calls setBearing when actually rotating,
+    // so it has zero cost when the user is interacting with the map.
     const rotate = () => {
       if (rotatingRef.current && mapRef.current) {
         mapRef.current.setBearing((mapRef.current.getBearing() + 0.025) % 360)
+        rafRef.current = requestAnimationFrame(rotate)
+      } else {
+        rafRef.current = 0
       }
+    }
+    if (rotatingRef.current) {
       rafRef.current = requestAnimationFrame(rotate)
     }
-    rafRef.current = requestAnimationFrame(rotate)
 
     map.on('movestart', () => { rotatingRef.current = false })
+
+    map.on('zoomstart', () => { zoomingRef.current = true })
+    map.on('zoomend', () => { zoomingRef.current = false })
+
     map.on('moveend', () => {
+      // Skip the expensive pickObjects call when the movement was a zoom gesture.
+      // Features in the analytics panel are irrelevant during mid-zoom anyway.
+      if (zoomingRef.current) return
+
       if (pickTimerRef.current) clearTimeout(pickTimerRef.current)
       pickTimerRef.current = setTimeout(() => {
         if (!overlayRef.current) return
         const canvas = map.getCanvas()
-        const picked = overlayRef.current.pickObjects({
-          x: 0,
-          y: 0,
-          width: canvas.clientWidth,
-          height: canvas.clientHeight,
-        })
+        // Pick only the centre 60% of the canvas to avoid expensive edge polygons
+        // and reduce the search space significantly at high zoom levels.
+        const pw = Math.round(canvas.clientWidth * 0.6)
+        const ph = Math.round(canvas.clientHeight * 0.6)
+        const px = Math.round((canvas.clientWidth - pw) / 2)
+        const py = Math.round((canvas.clientHeight - ph) / 2)
+        const picked = overlayRef.current.pickObjects({ x: px, y: py, width: pw, height: ph })
         onFeaturesChange(picked.map((p: any) => p.object).filter(Boolean))
-      }, 300)
+      }, 400)
     })
 
     return () => {
