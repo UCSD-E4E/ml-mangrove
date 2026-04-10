@@ -27,3 +27,5 @@ ipywidgets
 geemap 
 earthengine-api 
 geedim
+ml-
+tensorboardX
