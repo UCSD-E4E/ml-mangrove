@@ -104,7 +104,7 @@ print(f"Starting direct download to: {out_dir}")
 #     lambda k, v: ee.Number(v).divide(total).multiply(100)
 # )
 
-# print(percent.getInfo())
+print(percent.getInfo())
 counter=0
 for i, coords in enumerate(coords_array):
     geom = ee.Geometry.Polygon(coords)
