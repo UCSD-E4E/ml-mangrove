@@ -1,5 +1,4 @@
 import ee
-import time
 import geemap
 import os
 
@@ -82,66 +81,59 @@ out_dir = os.path.join(os.getcwd(), 'Brazil_Training_Dataset')
 os.makedirs(out_dir, exist_ok=True)
 print(f"Starting direct download to: {out_dir}")
 
+tiles_fc = ee.FeatureCollection([
+    ee.Feature(ee.Geometry.Polygon(coords)) for coords in coords_array
+])
+
+stats = training_stack.select('ESA_MultiClass_Label').reduceRegions(
+    collection=tiles_fc,
+    reducer=ee.Reducer.frequencyHistogram(),
+    scale=100,
+    tileScale=4
+)
+# print(stats.first().getInfo())
+
+def add_metrics(feat):
+    hist = ee.Dictionary(feat.get('histogram'))
+    total = ee.Number(hist.values().reduce(ee.Reducer.sum()))
+    total = ee.Algorithms.If(total, total, 1)
+    
+    water = ee.Number(hist.get('80', 0)).divide(total).multiply(100)
+    tree  = ee.Number(hist.get('10', 0)).divide(total).multiply(100)
+
+    keep = water.lt(70).And(tree.lt(70))
+    keep_num = ee.Number(keep)
+    return feat.set({'keep': keep_num})
+
+filtered = stats.map(add_metrics).filter(ee.Filter.eq('keep', 1))
+# print(filtered.size().getInfo())
+
+sampled = filtered.randomColumn('rand').sort('rand').limit(100)
+
+# bring ONLY these to Python
+selected_tiles = sampled.toList(100).getInfo()
+
 # WARNING: [0:1] slices the array to only download the VERY FIRST tile for testing.
 # Once it succeeds, remove the slice [0:1] to loop through all ~98 tiles.
-
-# tiles_fc = ee.FeatureCollection([
-#     ee.Feature(ee.Geometry.Polygon(coords)) for coords in coords_array
-# ])
-
-# stats = training_stack.select('ESA_MultiClass_Label').reduceRegion(
-#     reducer=ee.Reducer.frequencyHistogram(),
-#     geometry=tiles_fc.geometry(),   # all tiles combined
-#     scale=100,
-#     maxPixels=1e13
-# )
-
-# hist = ee.Dictionary(stats.get('ESA_MultiClass_Label'))
-
-# total = ee.Number(hist.values().reduce(ee.Reducer.sum()))
-
-# percent = hist.map(
-#     lambda k, v: ee.Number(v).divide(total).multiply(100)
-# )
-
-print(percent.getInfo())
-counter=0
-for i, coords in enumerate(coords_array):
+for i, feat in enumerate(selected_tiles[:1]):
+    coords = feat['geometry']['coordinates']
     geom = ee.Geometry.Polygon(coords)
-    # filename = os.path.join(out_dir, f'BR_Training_Tile_{i + 1:03d}.tif')
+    filename = os.path.join(out_dir, f'BR_Training_Tile_{i + 1:03d}.tif')
     
-    # print(f"[{i+1}/{total_tiles}] Downloading directly to disk. This might take a few minutes...")
-    
+    print(f"[{i+1}/{total_tiles}] Downloading directly to disk. This might take a few minutes...")
+
     try:
-        # print(training_stack.bandNames().getInfo())
-        stats = training_stack.select('ESA_MultiClass_Label').reduceRegion(
-            reducer=ee.Reducer.frequencyHistogram(),
-            geometry=geom,
-            scale=100,
-            maxPixels=1e9
+        geemap.download_ee_image(
+            image=training_stack,
+            filename=filename,
+            region=geom,
+            crs='EPSG:3857', 
+            scale=10
         )
+        print(f"Success! Saved: {filename}")
 
-        water_pct = stats.get('80', 0)
-        tree_pct  = stats.get('10', 0)
-
-        if water_pct < 80 and tree_pct < 80:
-            keep_tile = True
-        else:
-            keep_tile = False
-
-        if keep_tile:
-            counter+=1
-        # geemap.download_ee_image(
-        #     image=training_stack,
-        #     filename=filename,
-        #     region=geom,
-        #     crs='EPSG:3857', 
-        #     scale=10
-        # )
-        # print(f"Success! Saved: {filename}")
     except Exception as e:
         print(f"Failed to download tile {i+1}. Error: {e}")
 
-print("Before filter: ", len(coords_array))
-print("After filter: ", counter) 
+print("After filter: ", len(selected_tiles)) 
 print("\nDownload script finished!")
