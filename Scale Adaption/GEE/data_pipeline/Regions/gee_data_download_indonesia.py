@@ -43,7 +43,7 @@ RANDOM_SEED = 42
 
 # Cache Pass-1 scan results so later runs skip straight to download.
 # Delete this file (or set RESCAN=1) to force a fresh scan.
-CANDIDATES_CACHE_PATH = os.path.join(os.getcwd(), 'candidates_cache.json')
+CANDIDATES_CACHE_PATH = os.path.join(os.getcwd(), 'indonesia_candidates_cache.json')
 
 # Quality filter thresholds (tuned for ~20 km grid cells + archipelago)
 MIN_MANGROVE_PCT = 0.1       # >= 0.1% mangrove (~40 px of 100 m in a 20 km tile)
@@ -144,7 +144,8 @@ def download_tiles():
     # ------------------------------------------------------------------
     # 0. Initialise Earth Engine
     # ------------------------------------------------------------------
-    ee.Initialize()
+    ee.Authenticate()
+    ee.Initialize(project='e4e-mangrove')
     print("Initializing Filtered Direct-to-Disk Pipeline...")
 
     # ------------------------------------------------------------------

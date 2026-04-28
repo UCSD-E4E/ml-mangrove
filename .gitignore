@@ -24,3 +24,6 @@ Scale Adaption/GEE/experiments
 Observatory/data
 Scale Adaption/GEE/chips
 Scale Adaption/Paraformer
+**/data
+**/dataset
+**/experiments

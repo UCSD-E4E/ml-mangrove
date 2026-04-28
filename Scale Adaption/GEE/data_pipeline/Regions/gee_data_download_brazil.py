@@ -49,7 +49,7 @@ def main():
     Controls the main workflow of downloading all the brazil tiles
     """
     ee.Authenticate()
-    ee.Initialize(project='ee-mydong')
+    ee.Initialize(project='e4e-mangrove')
     print("Initializing Filtered Direct-to-Disk Pipeline...")
 
     # ==========================================
@@ -126,28 +126,29 @@ def main():
     # only use the first 100 randomly sampled tiles given the by function sample_hundred
     selected_tiles = sample_hundred(coords_array, training_stack).toList(100).getInfo()
 
-    # WARNING: [0:1] slices the array to only download the VERY FIRST tile for testing.
-    # Once it succeeds, remove the slice [0:1] to loop through all ~98 tiles.
-    for i, feat in enumerate(selected_tiles[:1]):
+    total_tiles = len(selected_tiles)
+    for i, feat in enumerate(selected_tiles):
         geom = ee.Geometry(feat['geometry'])
         filename = os.path.join(out_dir, f'BR_Training_Tile_{i + 1:03d}.tif')
-        
-        print(f"[{i+1}/{100}] Downloading directly to disk. This might take a few minutes...")
+
+        if os.path.exists(filename):
+            print(f"[{i+1}/{total_tiles}] Already exists, skipping.")
+            continue
+
+        print(f"[{i+1}/{total_tiles}] Downloading directly to disk. This might take a few minutes...")
 
         try:
             geemap.download_ee_image(
                 image=training_stack,
                 filename=filename,
                 region=geom,
-                crs='EPSG:3857', 
+                crs='EPSG:3857',
                 scale=10
             )
             print(f"Success! Saved: {filename}")
 
         except Exception as e:
             print(f"Failed to download tile {i+1}. Error: {e}")
-
-    print("After filter: ", len(selected_tiles)) 
     print("\nDownload script finished!")
 
 if __name__ == "__main__":

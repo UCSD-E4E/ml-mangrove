@@ -1,5 +1,4 @@
 import ee
-import time
 import geemap
 import os
 
@@ -108,17 +107,20 @@ def main():
     # for i, coords in enumerate(coords_array[0:1]): 
     for i, coords in enumerate(coords_array):
         geom = ee.Geometry.Polygon(coords)
-        
-        filename = os.path.join(out_dir, f'IB_Tile_{i + 1:03d}.tif')
-        
+        filename = os.path.join(out_dir, f'IB_Training_Tile_{i + 1:03d}.tif')
+
+        if os.path.exists(filename):
+            print(f"[{i+1}/{total_tiles}] Already exists, skipping.")
+            continue
+
         print(f"[{i+1}/{total_tiles}] Downloading directly to disk. This might take a few minutes...")
-        
+
         try:
             geemap.download_ee_image(
                 image=training_stack,
                 filename=filename,
                 region=geom,
-                crs='EPSG:3857', 
+                crs='EPSG:3857',
                 scale=10
             )
             print(f"Success! Saved: {filename}")
@@ -128,5 +130,5 @@ def main():
     print("\nDownload script finished!")
     
 
-if (__name__ == "__main__"):
+if __name__ == "__main__":
     main()
