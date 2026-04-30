@@ -1,0 +1,119 @@
+# Per-region configuration for GEE tile export.
+#
+# ESA WorldCover v200 classes:
+#   10=Trees  20=Shrub  30=Grass  40=Crop  50=Built-up
+#   60=Bare   70=Snow   80=Water  90=Wetland  95=Mangrove  100=Moss
+#
+# Thresholds (all percentages, 0-100):
+#   min_mangrove_pct  — drop tiles with too little mangrove signal
+#   max_water_pct     — drop ocean/river-dominated tiles
+#   max_tree_pct      — drop tiles overwhelmed by non-mangrove forest
+#   max_bare_built_pct — drop tiles overwhelmed by urban/bare land
+#   min_classes       — require at least N distinct ESA classes (diversity check)
+
+florida:
+  display_name: "Florida + Cuba + Bahamas"
+  bbox: [-87.0, 19.5, -72.0, 27.5]
+  date_range: ["2023-01-01", "2024-01-01"]
+  cloud_pct_max: 10
+  output_prefix: "FL_Training_Tile"
+  gcs_prefix: "florida"
+  # KEY imbalance: large bbox spans open Caribbean — Pass 1 discards ocean tiles fast.
+  # Cuba north/south coasts add dense mangrove fringes; Bahamas adds shallow-water tiles.
+  # max_tree_pct raised slightly: Cuba has more interior tree cover than South Florida.
+  min_mangrove_pct: 1.0
+  max_water_pct: 75.0
+  max_tree_pct: 70.0
+  max_bare_built_pct: 30.0
+  min_classes: 2
+  sample_size: 100
+  seed: 42
+
+brazil:
+  display_name: "Brazil"
+  country_filter:
+    dataset: "USDOS/LSIB_SIMPLE/2017"
+    field: "country_na"
+    value: "Brazil"
+  date_range: ["2023-01-01", "2024-01-01"]
+  cloud_pct_max: 10
+  output_prefix: "BR_Training_Tile"
+  gcs_prefix: "brazil"
+  # KEY imbalance: Amazon inland forest (class 10) floods candidate pool
+  min_mangrove_pct: 1.0
+  max_water_pct: 70.0
+  max_tree_pct: 70.0        # <-- tune this to cut inland Amazon tiles
+  max_bare_built_pct: 50.0
+  min_classes: 2
+  sample_size: 100
+  seed: 42
+
+indonesia:
+  display_name: "Indonesia"
+  bbox: [95, -11, 141, 6]
+  date_range: ["2023-01-01", "2024-01-01"]
+  cloud_pct_max: 10
+  output_prefix: "ID_Training_Tile"
+  gcs_prefix: "indonesia"
+  # KEY imbalance: archipelago means most 20km tiles are majority ocean
+  min_mangrove_pct: 0.1     # thin coastal fringes are valid for large cells
+  max_water_pct: 80.0       # <-- tune this; Indonesia has lots of inter-island water
+  max_tree_pct: 70.0
+  max_bare_built_pct: 30.0
+  min_classes: 2
+  sample_size: 100
+  seed: 42
+
+madagascar_mozambique:
+  display_name: "Madagascar + Mozambique"
+  country_filter:
+    dataset: "FAO/GAUL/2015/level0"
+    field: "ADM0_NAME"
+  multi_country: ["Madagascar", "Mozambique"]
+  date_range: ["2023-01-01", "2024-01-01"]
+  cloud_pct_max: 10
+  output_prefix: "MadMoz_Training_Tile"
+  gcs_prefix: "madagascar_mozambique"
+  # KEY imbalance: estuaries and channels give many water-dominated tiles
+  min_mangrove_pct: 3.0
+  max_water_pct: 65.0       # <-- tune this; channel/estuary tiles are very watery
+  max_tree_pct: 70.0
+  max_bare_built_pct: 50.0
+  min_classes: 2
+  sample_size: 100
+  seed: 42
+
+north_australia:
+  display_name: "North Australia (Kimberley + Top End + Gulf of Carpentaria)"
+  bbox: [122.0, -20.0, 146.0, -10.0]
+  date_range: ["2023-01-01", "2024-01-01"]
+  cloud_pct_max: 10
+  output_prefix: "AU_Training_Tile"
+  gcs_prefix: "north_australia"
+  # KEY imbalance: savanna woodland (class 10) dominates inland; tidal mudflats
+  # inflate bare/sparse (class 60). Gulf of Carpentaria has world's largest mangrove belt.
+  # Wet season (Nov-Apr) brings heavy cloud — dry season composite helps but cloud filter
+  # is critical. max_bare_built_pct raised: exposed tidal flats are common.
+  min_mangrove_pct: 1.0
+  max_water_pct: 70.0
+  max_tree_pct: 70.0
+  max_bare_built_pct: 50.0   # tidal mudflats register as bare/sparse
+  min_classes: 2
+  sample_size: 100
+  seed: 42
+
+east_india_bangladesh:
+  display_name: "East India + Bangladesh (Sundarbans)"
+  bbox: [86.5, 18.5, 94.25, 22.7]
+  date_range: ["2023-01-01", "2024-01-01"]
+  cloud_pct_max: 10
+  output_prefix: "IB_Training_Tile"
+  gcs_prefix: "east_india_bangladesh"
+  # KEY imbalance: dense non-mangrove forest inland (class 10)
+  min_mangrove_pct: 1.0
+  max_water_pct: 80.0
+  max_tree_pct: 50.0        # <-- tune this to cut inland forest tiles
+  max_bare_built_pct: 40.0
+  min_classes: 2
+  sample_size: 100
+  seed: 42

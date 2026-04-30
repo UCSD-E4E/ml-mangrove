@@ -1,0 +1,31 @@
+# Global class taxonomy for all regions.
+# Edit this file (and re-run prepare_chips.py) to change the class mapping.
+# Classes absent from a region will be IGNORE_INDEX during training — safe.
+
+num_classes: 9
+ignore_index: 255
+
+# ESA WorldCover v200 raw value → class index
+# Includes every class that appeared in any training region.
+# Snow/Ice (70) and Moss/Lichen (100) are excluded — 0% across all 5 regions.
+esa_to_class:
+  10: 0   # Trees
+  20: 1   # Shrubland
+  30: 2   # Grassland
+  40: 3   # Cropland
+  50: 4   # Built-up
+  60: 5   # Bare/Sparse
+  80: 6   # Water
+  90: 7   # Wetland
+  95: 8   # Mangrove
+
+class_names:
+  - Trees
+  - Shrubland
+  - Grassland
+  - Cropland
+  - Built-up
+  - Bare/Sparse
+  - Water
+  - Wetland
+  - Mangrove
