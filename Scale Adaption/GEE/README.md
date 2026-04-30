@@ -116,6 +116,17 @@ eval "$($HOME/miniconda3/bin/conda shell.bash hook)"
 conda activate mangrove
 ```
 
+Authenticate with GCS (required once per VM — lets `prepare_chips.py` and `train.py` access the bucket):
+```bash
+gcloud auth application-default login --no-launch-browser
+```
+This prints a URL. Open it in your browser, sign in with the GCP account that owns the bucket, copy the verification code, and paste it back in the terminal.
+
+Create the `/data` directory (used for tiles, chips, and experiments):
+```bash
+sudo mkdir -p /data && sudo chown $USER:$USER /data
+```
+
 ### Step 4 — Download + chip tiles (VM, per region)
 
 ```bash

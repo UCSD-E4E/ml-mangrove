@@ -62,6 +62,7 @@ pip install \
     "transformers>=4.40" \
     pyyaml \
     numpy \
+    scipy \
     tqdm \
     matplotlib \
     google-cloud-storage \
