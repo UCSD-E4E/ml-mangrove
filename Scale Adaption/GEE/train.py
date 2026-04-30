@@ -143,6 +143,8 @@ def main() -> None:
                         help='Path to checkpoint (.pth) to resume or warm-start from')
     parser.add_argument('--replay-regions',  nargs='+', default=[],
                         help='Region names to use as replay buffer (continual learning)')
+    parser.add_argument('--replay-dir',      default='/data/replay',
+                        help='Root dir of replay buffers (default: /data/replay)')
     parser.add_argument('--replay-fraction', type=float, default=0.3,
                         help='Fraction of each batch sampled from replay buffer')
     parser.add_argument('--bucket',          default=None,
@@ -178,8 +180,9 @@ def main() -> None:
     # ── Replay buffer ─────────────────────────────────────────────────────────
     replay_datasets = []
     if args.replay_regions:
+        replay_root = Path(args.replay_dir)
         for rname in args.replay_regions:
-            rdir = chips_root / rname / 'train'
+            rdir = replay_root / rname / 'train'
             if not rdir.exists():
                 print(f'WARNING: replay dir not found, skipping: {rdir}')
                 continue

@@ -88,6 +88,9 @@ Export flags:
 
 ### Step 3 — Set up GCP VM (once)
 
+Create a GPU VM instance via GCP Console (Compute Engine → VM instances → Create Instance).
+Attach a separate 300GB SSD persistent disk for tile + chip storage and mount it at `/data/`.
+
 SSH into the VM, then bootstrap git and clone the repo first:
 ```bash
 sudo apt-get update && sudo apt-get install -y git
@@ -98,6 +101,18 @@ cd ml-mangrove
 Then run the full setup script:
 ```bash
 bash "Scale Adaption/GEE/scripts/vm_setup.sh"
+```
+
+If conda TOS errors appear mid-script, accept them and re-run:
+```bash
+conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/main
+conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/r
+bash "Scale Adaption/GEE/scripts/vm_setup.sh"
+```
+
+After setup completes, initialize conda and activate the environment:
+```bash
+eval "$($HOME/miniconda3/bin/conda shell.bash hook)"
 conda activate mangrove
 ```
 
@@ -117,9 +132,9 @@ This downloads `.tif` tiles from GCS, computes per-region normalization stats,
 and writes 512×512 `.npz` chip files used directly by the training script.
 Chips are float16 features + uint8 labels — skips existing files on re-run.
 
-### Step 5 — Train (VM)
+### Step 5 — Train + build replay buffer (VM, per region)
 
-**Base model — Florida:**
+**Base model — Florida (no replay):**
 ```bash
 python train.py \
     --chips-dir /data/chips \
@@ -129,27 +144,55 @@ python train.py \
     --bucket YOUR_EE_PROJECT
 ```
 
+**After training each region, sample 5% of chips into a compact replay buffer:**
+```bash
+python scripts/create_replay_buffer.py \
+    --chips-dir /data/chips \
+    --region florida \
+    --replay-dir /data/replay \
+    --fraction 0.05
+```
+
+This copies ~5% of chips (~200 chips, ~7 GB) to `/data/replay/florida/train/`. Once the replay buffer is created, you can delete the full chip directory for that region to free space on `/data/`:
+```bash
+rm -rf /data/chips/florida
+```
+
 **Continual learning — each subsequent region:**
 ```bash
-# Brazil (replay Florida)
+# Chip + train Brazil
+python scripts/prepare_chips.py --bucket YOUR_EE_PROJECT --region brazil \
+    --tiles-dir /data/tiles --chips-dir /data/chips
 python train.py \
     --chips-dir /data/chips \
     --region brazil \
     --experiment gee_brazil_cl_v1 \
     --resume /data/experiments/gee_florida_v1/best_model.pth \
     --replay-regions florida \
+    --replay-dir /data/replay \
     --replay-fraction 0.3 \
-    --epochs 100
+    --epochs 100 \
+    --bucket YOUR_EE_PROJECT
+python scripts/create_replay_buffer.py --chips-dir /data/chips --region brazil \
+    --replay-dir /data/replay --fraction 0.05
+rm -rf /data/chips/brazil
 
 # Indonesia (replay Florida + Brazil)
+python scripts/prepare_chips.py --bucket YOUR_EE_PROJECT --region indonesia \
+    --tiles-dir /data/tiles --chips-dir /data/chips
 python train.py \
     --chips-dir /data/chips \
     --region indonesia \
     --experiment gee_indonesia_cl_v1 \
     --resume /data/experiments/gee_brazil_cl_v1/best_model.pth \
     --replay-regions florida brazil \
+    --replay-dir /data/replay \
     --replay-fraction 0.3 \
-    --epochs 100
+    --epochs 100 \
+    --bucket YOUR_EE_PROJECT
+python scripts/create_replay_buffer.py --chips-dir /data/chips --region indonesia \
+    --replay-dir /data/replay --fraction 0.05
+rm -rf /data/chips/indonesia
 
 # Continue pattern: madagascar_mozambique → north_australia → east_india_bangladesh
 # Each run adds the previous region(s) to --replay-regions
