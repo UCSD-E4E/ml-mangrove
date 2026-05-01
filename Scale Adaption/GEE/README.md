@@ -89,7 +89,19 @@ Export flags:
 ### Step 3 — Set up GCP VM (once)
 
 Create a GPU VM instance via GCP Console (Compute Engine → VM instances → Create Instance).
-Attach a separate 300GB SSD persistent disk for tile + chip storage and mount it at `/data/`.
+Recommended machine type: **g2-standard-4** with **1× NVIDIA L4** GPU (CUDA 12.4, 23 GB VRAM).
+
+If you attach a GPU to an existing VM and `nvidia-smi` is not found, install the driver:
+```bash
+curl https://raw.githubusercontent.com/GoogleCloudPlatform/compute-gpu-installation/main/linux/install_gpu_driver.py --output install_gpu_driver.py
+sudo python3 install_gpu_driver.py
+sudo reboot
+```
+
+Verify after reboot:
+```bash
+nvidia-smi   # should show NVIDIA L4
+```
 
 SSH into the VM, then bootstrap git and clone the repo first:
 ```bash
@@ -105,6 +117,7 @@ bash "Scale Adaption/GEE/scripts/vm_setup.sh"
 
 If conda TOS errors appear mid-script, accept them and re-run:
 ```bash
+eval "$($HOME/miniconda3/bin/conda shell.bash hook)"
 conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/main
 conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/r
 bash "Scale Adaption/GEE/scripts/vm_setup.sh"
@@ -112,7 +125,7 @@ bash "Scale Adaption/GEE/scripts/vm_setup.sh"
 
 After setup completes, initialize conda and activate the environment:
 ```bash
-eval "$($HOME/miniconda3/bin/conda shell.bash hook)"
+eval "$($HOME/miniconda3/bin/conda shell.bash hook)" #If haven't already
 conda activate mangrove
 ```
 
@@ -131,7 +144,7 @@ sudo mkdir -p /data && sudo chown $USER:$USER /data
 
 ```bash
 python scripts/prepare_chips.py \
-    --bucket YOUR_EE_PROJECT \
+    --bucket e4e-mangrove \
     --region florida \
     --tiles-dir /data/tiles \
     --chips-dir /data/chips
@@ -144,6 +157,14 @@ and writes 512×512 `.npz` chip files used directly by the training script.
 Chips are float16 features + uint8 labels — skips existing files on re-run.
 
 ### Step 5 — Train + build replay buffer (VM, per region)
+
+Training takes hours — use `tmux` so it keeps running if your SSH connection drops:
+```bash
+sudo apt-get install -y tmux   # first time only
+tmux new -s train              # create a persistent terminal session
+```
+Inside the tmux session, run your training command. To detach (leave it running): `Ctrl+B` then `D`.
+To reconnect later: `tmux attach -t train`.
 
 **Base model — Florida (no replay):**
 ```bash

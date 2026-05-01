@@ -52,10 +52,11 @@ conda activate "$CONDA_ENV"
 
 echo ""
 echo "=== Step 4: Python packages ==="
-# PyTorch — matches CUDA 12.1 on most GCP Deep Learning VMs
-# Adjust cu121 → cu118 if your driver uses CUDA 11.8
+# PyTorch >= 2.6 required (transformers CVE-2025-32434 fix).
+# cu124 wheels cover CUDA 12.x drivers (12.4+). If your driver is older, swap to cu121
+# but note cu121 only goes up to torch 2.5.1 and will fail at model load time.
 pip install --upgrade pip
-pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
+pip install "torch>=2.6" torchvision --index-url https://download.pytorch.org/whl/cu124
 
 pip install \
     rasterio \
@@ -63,6 +64,7 @@ pip install \
     pyyaml \
     numpy \
     scipy \
+    psutil \
     tqdm \
     matplotlib \
     google-cloud-storage \
