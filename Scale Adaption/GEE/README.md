@@ -91,16 +91,25 @@ Export flags:
 Create a GPU VM instance via GCP Console (Compute Engine → VM instances → Create Instance).
 Recommended machine type: **g2-standard-4** with **1× NVIDIA L4** GPU (CUDA 12.4, 23 GB VRAM).
 
-If you attach a GPU to an existing VM and `nvidia-smi` is not found, install the driver:
+If `nvidia-smi` is not found after VM creation, install the kernel headers first (DKMS needs them to build the driver modules), then the driver, then reboot:
 ```bash
-curl https://raw.githubusercontent.com/GoogleCloudPlatform/compute-gpu-installation/main/linux/install_gpu_driver.py --output install_gpu_driver.py
-sudo python3 install_gpu_driver.py
+sudo apt-get update
+sudo apt-get install -y linux-headers-$(uname -r)
+sudo apt-get install -y nvidia-driver-550-open
 sudo reboot
 ```
 
 Verify after reboot:
 ```bash
 nvidia-smi   # should show NVIDIA L4
+```
+
+After confirming the GPU is visible, reinstall PyTorch with CUDA support:
+```bash
+conda activate mangrove
+pip install "torch>=2.6" torchvision --index-url https://download.pytorch.org/whl/cu124
+python -c "import torch; print(torch.cuda.is_available()); print(torch.cuda.get_device_name(0))"
+# Expected: True / NVIDIA L4
 ```
 
 SSH into the VM, then bootstrap git and clone the repo first:
@@ -144,7 +153,7 @@ sudo mkdir -p /data && sudo chown $USER:$USER /data
 
 ```bash
 python scripts/prepare_chips.py \
-    --bucket e4e-mangrove \
+    --bucket YOUR_EE_PROJECT \
     --region florida \
     --tiles-dir /data/tiles \
     --chips-dir /data/chips
@@ -173,7 +182,9 @@ python train.py \
     --region florida \
     --experiment gee_florida_v1 \
     --epochs 100 \
-    --bucket YOUR_EE_PROJECT
+    --batch-size 8 \
+    --num-workers 8 \
+    --bucket e4e-mangrove
 ```
 
 **After training each region, sample 5% of chips into a compact replay buffer:**
@@ -231,6 +242,55 @@ rm -rf /data/chips/indonesia
 ```
 
 Best checkpoints are uploaded to `gs://YOUR_EE_PROJECT/checkpoints/<experiment>/best_model.pth`.
+
+### Step 6 — Evaluate (VM)
+
+`evaluate.py` covers three scenarios: current region, forgetting check, and full CL audit.
+
+**After Florida — evaluate current region:**
+```bash
+python evaluate.py \
+    --checkpoint /data/experiments/gee_florida_v1/best_model.pth \
+    --chips-dir /data/chips \
+    --regions florida \
+    --output-dir /data/evaluations/florida
+```
+
+**After Brazil CL — check forgetting on Florida + current on Brazil:**
+```bash
+python evaluate.py \
+    --checkpoint /data/experiments/gee_brazil_cl_v1/best_model.pth \
+    --chips-dir /data/chips \
+    --regions florida brazil \
+    --baseline /data/experiments/gee_florida_v1/best_model.pth \
+    --output-dir /data/evaluations/brazil_cl_check
+```
+
+**Full audit across all trained regions:**
+```bash
+python evaluate.py \
+    --checkpoint /data/experiments/gee_indonesia_cl_v1/best_model.pth \
+    --chips-dir /data/chips \
+    --regions florida brazil indonesia \
+    --output-dir /data/evaluations/indonesia_full
+```
+
+**Outputs per run** (saved to `--output-dir`):
+| File | Description |
+|---|---|
+| `metrics_<region>.json` | All numerical metrics per region |
+| `confusion_matrix_<region>.png` | Row-normalized confusion matrix |
+| `class_metrics_<region>.png` | IoU / Precision / Recall / F1 bar chart |
+| `samples_<region>.png` | RGB · Ground Truth · Prediction side-by-side |
+| `miou_summary.png` | mIoU + Pixel Accuracy across all regions |
+| `cl_comparison.png` | Per-class IoU grouped by region (multi-region runs) |
+| `forgetting.png` | ΔIoU vs baseline — red=forgetting, green=improvement |
+| `summary.json` | All metrics + Backward Transfer (BWT) in one file |
+
+**Copy results to GCS after evaluation:**
+```bash
+gsutil -m cp -r /data/evaluations/ gs://YOUR_EE_PROJECT/evaluations/
+```
 
 ---
 

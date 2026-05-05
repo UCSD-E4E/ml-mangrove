@@ -67,6 +67,7 @@ pip install \
     psutil \
     tqdm \
     matplotlib \
+    seaborn \
     google-cloud-storage \
     timm \
     einops
