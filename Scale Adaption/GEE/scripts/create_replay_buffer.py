@@ -1,6 +1,6 @@
 """
-Sample a fraction of training chips from a completed region into a compact
-replay buffer so train.py can access them without keeping the full chip set.
+Sample a fraction of training chips and copy the full val split from a completed
+region into a compact replay buffer.
 
 Usage:
   python scripts/create_replay_buffer.py \\
@@ -9,12 +9,11 @@ Usage:
       --replay-dir /data/replay \\
       --fraction 0.05
 
-This copies ~5% of chips from /data/chips/florida/train/
-into /data/replay/florida/train/, overwriting nothing that already exists
-(safe to re-run). Run this immediately after training a region, before
-deleting the full chip directory.
+Outputs:
+  /data/replay/<region>/train/  — 5% random sample of train chips
+  /data/replay/<region>/val/    — full val split (kept for BWT / forgetting eval)
 
-Output: /data/replay/<region>/train/chip_*.npz  (numbered 0000, 0001, …)
+Run immediately after training a region, before deleting the full chip directory.
 """
 
 import argparse
@@ -66,7 +65,7 @@ def main() -> None:
 
     catalog = []
     for i, src_path in enumerate(selected):
-        dst_path = dst_dir / f'chip_{i:04d}.npz'
+        dst_path = dst_dir / f'chip_{i:05d}.npz'
         if dst_path.exists():
             dst_path.unlink()
         shutil.copy2(src_path, dst_path)
@@ -77,7 +76,28 @@ def main() -> None:
         json.dump(catalog, f, indent=2)
 
     print(f'Done. Wrote {n_sample:,} chips → {dst_dir}')
-    print(f'Replay buffer size: {sum(p.stat().st_size for p in dst_dir.glob("chip_*.npz")) / 1e6:.1f} MB')
+    print(f'Train replay size : {sum(p.stat().st_size for p in dst_dir.glob("chip_*.npz")) / 1e6:.1f} MB')
+
+    # ── Copy full val split ───────────────────────────────────────────────────
+    val_src = Path(args.chips_dir) / args.region / 'val'
+    val_dst = Path(args.replay_dir) / args.region / 'val'
+
+    if val_src.exists():
+        val_chips = sorted(val_src.glob('chip_*.npz'))
+        val_dst.mkdir(parents=True, exist_ok=True)
+        print(f'\nCopying full val split: {len(val_chips):,} chips → {val_dst}')
+        for src_path in val_chips:
+            dst_path = val_dst / src_path.name
+            if dst_path.exists():
+                dst_path.unlink()
+            shutil.copy2(src_path, dst_path)
+        # copy catalog if present
+        val_cat = val_src / 'catalog.json'
+        if val_cat.exists():
+            shutil.copy2(val_cat, val_dst / 'catalog.json')
+        print(f'Val split size    : {sum(p.stat().st_size for p in val_dst.glob("chip_*.npz")) / 1e6:.1f} MB')
+    else:
+        print(f'WARNING: val dir not found, skipping: {val_src}')
 
 
 if __name__ == '__main__':

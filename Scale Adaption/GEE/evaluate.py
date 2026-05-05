@@ -326,11 +326,13 @@ def load_model(
     in_channels: int,
     num_classes: int,
     device: torch.device,
+    patch_size: int = 512,
 ) -> torch.nn.Module:
     model = GEESegFormer(
         in_channels       = in_channels,
         num_classes       = num_classes,
         segformer_weights = SEGFORMER_WEIGHTS,
+        patch_size        = patch_size,
     )
     ckpt  = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
     state = ckpt.get('model_state_dict', ckpt)
@@ -360,6 +362,7 @@ def main() -> None:
                         choices=['rgb', 'rgbn', 'embeddings', 'full'])
     parser.add_argument('--batch-size',   type=int, default=4)
     parser.add_argument('--num-workers',  type=int, default=4)
+    parser.add_argument('--patch-size',   type=int, default=512)
     parser.add_argument('--n-samples',    type=int, default=6,
                         help='Number of sample prediction images to save per region')
     parser.add_argument('--seed',         type=int, default=42)
@@ -385,13 +388,13 @@ def main() -> None:
     has_rgb     = args.mode in ('rgb', 'rgbn', 'full')
 
     print(f'\nLoading checkpoint: {args.checkpoint}')
-    model = load_model(args.checkpoint, in_channels, num_classes, device)
+    model = load_model(args.checkpoint, in_channels, num_classes, device, args.patch_size)
 
     baseline_model   = None
     baseline_metrics = {}
     if args.baseline:
         print(f'Loading baseline: {args.baseline}')
-        baseline_model = load_model(args.baseline, in_channels, num_classes, device)
+        baseline_model = load_model(args.baseline, in_channels, num_classes, device, args.patch_size)
 
     chips_root   = Path(args.chips_dir)
     all_metrics  = {}

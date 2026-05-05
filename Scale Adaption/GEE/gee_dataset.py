@@ -154,7 +154,10 @@ class CachedChipDataset(Dataset):
         if cat_path.exists():
             with open(cat_path) as f:
                 raw = json.load(f)
-            self.catalog = [(d['path'], d['row_off'], d['col_off']) for d in raw]
+            try:
+                self.catalog = [(d['path'], d['row_off'], d['col_off']) for d in raw]
+            except KeyError:
+                self.catalog = None  # replay buffer catalog has a different schema
         else:
             self.catalog = None
 
