@@ -243,7 +243,7 @@ python train.py \
     --resume "$HOME/ml-mangrove/Scale Adaption/GEE/experiments/gee_florida_v1/best_model.pth" \
     --replay-regions florida \
     --replay-dir /data/replay \
-    --replay-fraction 0.3 \
+    --replay-fraction 0.1 \
     --epochs 100 \
     --batch-size 8 \
     --num-workers 8 \
@@ -262,7 +262,7 @@ python train.py \
     --resume "$HOME/ml-mangrove/Scale Adaption/GEE/experiments/gee_brazil_cl_v1/best_model.pth" \
     --replay-regions florida brazil \
     --replay-dir /data/replay \
-    --replay-fraction 0.3 \
+    --replay-fraction 0.1 \
     --epochs 100 \
     --batch-size 8 \
     --num-workers 8 \
@@ -417,7 +417,7 @@ Sequential fine-tuning on new regions causes catastrophic forgetting — the mod
 **Why a fixed 9-class head from the start?**
 Classes rare in Florida (e.g. Cropland) simply never appear as pixels there — their logits receive no gradient. When East India arrives (20.6% Cropland), those logits start training naturally. No architectural changes between regions.
 
-**Replay fraction:** 0.3 (30% of each batch from prior regions) is a reasonable starting point.
+**Replay fraction:** 0.1 (10% of each batch from prior regions) is a good balance across 6 regions.
 Too low → forgetting. Too high → new region learns slowly. Tune per experiment.
 
 **Training order (recommended):** Florida → Brazil → Indonesia → Madagascar/Mozambique → North Australia → East India/Bangladesh

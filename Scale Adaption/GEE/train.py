@@ -145,7 +145,7 @@ def main() -> None:
                         help='Region names to use as replay buffer (continual learning)')
     parser.add_argument('--replay-dir',      default='/data/replay',
                         help='Root dir of replay buffers (default: /data/replay)')
-    parser.add_argument('--replay-fraction', type=float, default=0.3,
+    parser.add_argument('--replay-fraction', type=float, default=0.1,
                         help='Fraction of each batch sampled from replay buffer')
     parser.add_argument('--bucket',          default=None,
                         help='GCS bucket to upload best checkpoint after training')
