@@ -181,17 +181,37 @@ Key flags:
 This downloads `.tif` tiles from GCS, computes per-region normalization stats,
 and writes 512×512 `.npz` chip files. Chips are float16 features + uint8 labels — skips existing files on re-run.
 
-### Step 5 — Train + build replay buffer (VM, per region)
+### Step 5 — Train, evaluate, and build replay buffer (VM, per region)
 
-Training takes hours — use `tmux` so it keeps running if your SSH connection drops:
+The full cycle for every region is:
+**chip → train → create replay buffer → evaluate → delete chips → upload results to GCS**
+
+> The replay buffer must be created **before** evaluating — `evaluate.py` reads val chips from `/data/replay/<region>/val/`, which doesn't exist until `create_replay_buffer.py` has run.
+
+Val splits are always preserved in `/data/replay/<region>/val/`, so you can re-evaluate any region at any time without re-chipping.
+
+#### Persistent terminal (SSH-safe)
+
+Training takes 10–15 hours per region. Use `tmux` so training keeps running if your SSH connection drops:
 ```bash
 sudo apt-get install -y tmux   # first time only
-tmux new -s train              # create a persistent terminal session
+tmux new -s train              # create a named, persistent terminal session
 ```
-Inside the tmux session, run your training command. To detach (leave it running): `Ctrl+B` then `D`.
-To reconnect later: `tmux attach -t train`.
+Key tmux commands:
+| Action | Keys / Command |
+|---|---|
+| Detach (leave running in background) | `Ctrl+B` then `D` |
+| Reconnect to running session | `tmux attach -t train` |
+| List all sessions | `tmux ls` |
+| Kill a session | `tmux kill-session -t train` |
 
-**Base model — Florida (no replay):**
+If your SSH connection drops mid-training, just SSH back in and `tmux attach -t train` — the process keeps running.
+
+---
+
+#### Region 1 — Florida (base model, no replay)
+
+**Train:**
 ```bash
 python train.py \
     --chips-dir /data/chips \
@@ -199,25 +219,15 @@ python train.py \
     --experiment gee_florida_v1 \
     --epochs 100 \
     --batch-size 8 \
-    --num-workers 8 \
+    --num-workers 2 \
     --bucket e4e-mangrove    # change if needed
 ```
 
-Key flags:
-- `--chips-dir` — root chip directory (has `<region>/train/` and `<region>/val/`)
-- `--region` — region to train on
-- `--experiment` — experiment name (creates `experiments/<name>/`)
-- `--resume` — path to checkpoint to warm-start or resume from
-- `--replay-regions` — list of prior region names to replay
-- `--replay-dir` — root replay buffer directory (default: `/data/replay`)
-- `--replay-fraction` — fraction of each batch from replay (default: 0.3)
-- `--mode` — band mode matching the chips (default: `full`)
-- `--lr` — learning rate (default: 5e-5)
-- `--weight-decay` — AdamW weight decay (default: 0.01)
-- `--seed` — random seed (default: 42)
-- `--bucket` — GCS bucket to upload best checkpoint after training
+> **Why `--num-workers 2`:** GCP standard persistent disks have a burst IOPS budget that exhausts after ~1 epoch. With 8 workers all reading `.npz` files simultaneously the disk throttles and later epochs slow to a crawl (10× slower). 2 workers is enough to keep the GPU fed without hitting the sustained IOPS limit.
 
-**After training each region, build the replay buffer (keeps 5% train + full val):**
+Best checkpoint is saved to `experiments/gee_florida_v1/best_model.pth` and uploaded to GCS automatically on completion.
+
+**Build replay buffer:**
 ```bash
 python scripts/create_replay_buffer.py \
     --chips-dir /data/chips \
@@ -225,17 +235,36 @@ python scripts/create_replay_buffer.py \
     --replay-dir /data/replay \
     --fraction 0.05
 ```
+Copies ~5% of train chips to `/data/replay/florida/train/` and the full val split to `/data/replay/florida/val/`.
 
-This copies ~5% (~196) of train chips to `/data/replay/florida/train/` and the full val split to `/data/replay/florida/val/`. Once done, delete the full chip directory to free space:
+**Evaluate:**
+```bash
+python evaluate.py \
+    --checkpoint "$HOME/ml-mangrove/Scale Adaption/GEE/experiments/gee_florida_v1/best_model.pth" \
+    --chips-dir /data/replay \
+    --regions florida \
+    --output-dir /data/evaluations/florida \
+    --batch-size 8
+```
+No `--baseline` for the first region — nothing to compare against yet.
+
+**Delete chips and upload results:**
 ```bash
 rm -rf /data/chips/florida
+
+gsutil -m cp -r /data/evaluations/florida gs://e4e-mangrove/evaluations/    # change if needed
 ```
 
-**Continual learning — each subsequent region:**
+---
+
+#### Region 2 — Brazil (replay: florida)
+
+**Chip + train:**
 ```bash
-# Brazil (replay Florida)
-python scripts/prepare_chips.py --bucket e4e-mangrove --region brazil \    # change if needed
+python scripts/prepare_chips.py \
+    --bucket e4e-mangrove --region brazil \
     --tiles-dir /data/tiles --chips-dir /data/chips
+
 python train.py \
     --chips-dir /data/chips \
     --region brazil \
@@ -244,17 +273,46 @@ python train.py \
     --replay-regions florida \
     --replay-dir /data/replay \
     --replay-fraction 0.1 \
-    --epochs 100 \
-    --batch-size 8 \
-    --num-workers 8 \
+    --epochs 100 --batch-size 8 --num-workers 2 \
     --bucket e4e-mangrove    # change if needed
-python scripts/create_replay_buffer.py --chips-dir /data/chips --region brazil \
+```
+
+**Build replay buffer:**
+```bash
+python scripts/create_replay_buffer.py \
+    --chips-dir /data/chips --region brazil \
     --replay-dir /data/replay --fraction 0.05
+```
+
+**Evaluate** (compares Brazil CL model against Florida-only baseline — measures forgetting):
+```bash
+python evaluate.py \
+    --checkpoint "$HOME/ml-mangrove/Scale Adaption/GEE/experiments/gee_brazil_cl_v1/best_model.pth" \
+    --chips-dir /data/replay \
+    --regions florida brazil \
+    --baseline "$HOME/ml-mangrove/Scale Adaption/GEE/experiments/gee_florida_v1/best_model.pth" \
+    --output-dir /data/evaluations/brazil_cl \
+    --batch-size 8
+```
+`--baseline` compares the CL checkpoint against the prior single-region model. `forgetting.png` shows ΔIoU per class (red = forgot, green = improved). `summary.json` includes Backward Transfer (BWT) — negative BWT = forgetting, positive = new data helped prior regions.
+
+**Delete chips and upload results:**
+```bash
 rm -rf /data/chips/brazil
 
-# Indonesia (replay Florida + Brazil)
-python scripts/prepare_chips.py --bucket e4e-mangrove --region indonesia \    # change if needed
+gsutil -m cp -r /data/evaluations/brazil_cl gs://e4e-mangrove/evaluations/    # change if needed
+```
+
+---
+
+#### Region 3 — Indonesia (replay: florida, brazil)
+
+**Chip + train:**
+```bash
+python scripts/prepare_chips.py \
+    --bucket e4e-mangrove --region indonesia \
     --tiles-dir /data/tiles --chips-dir /data/chips
+
 python train.py \
     --chips-dir /data/chips \
     --region indonesia \
@@ -263,86 +321,204 @@ python train.py \
     --replay-regions florida brazil \
     --replay-dir /data/replay \
     --replay-fraction 0.1 \
-    --epochs 100 \
-    --batch-size 8 \
-    --num-workers 8 \
+    --epochs 100 --batch-size 8 --num-workers 2 \
     --bucket e4e-mangrove    # change if needed
-python scripts/create_replay_buffer.py --chips-dir /data/chips --region indonesia \
+```
+
+**Build replay buffer:**
+```bash
+python scripts/create_replay_buffer.py \
+    --chips-dir /data/chips --region indonesia \
     --replay-dir /data/replay --fraction 0.05
-rm -rf /data/chips/indonesia
-
-# Continue pattern: madagascar_mozambique → north_australia → east_india_bangladesh
-# Each run: add the previous region to --replay-regions and update --resume to the latest checkpoint
 ```
 
-Best checkpoints are uploaded to `gs://e4e-mangrove/checkpoints/<experiment>/best_model.pth`.  # change if needed
-
-### Step 6 — Evaluate (VM)
-
-`evaluate.py` covers three scenarios: current region, forgetting check, and full CL audit.
-
-Checkpoints are saved inside the repo under `Scale Adaption/GEE/experiments/`. The val split for each region is preserved in `/data/replay/<region>/val/` — use `--chips-dir /data/replay` when evaluating prior regions so you don't need to re-chip them.
-
-**After Florida — evaluate current region:**
-```bash
-python evaluate.py \
-    --checkpoint "$HOME/ml-mangrove/Scale Adaption/GEE/experiments/gee_florida_v1/best_model.pth" \
-    --chips-dir /data/chips \
-    --regions florida \
-    --output-dir /data/evaluations/florida
-```
-
-**After Brazil CL — check forgetting on Florida + current on Brazil:**
-```bash
-python evaluate.py \
-    --checkpoint "$HOME/ml-mangrove/Scale Adaption/GEE/experiments/gee_brazil_cl_v1/best_model.pth" \
-    --chips-dir /data/replay \
-    --regions florida brazil \
-    --baseline "$HOME/ml-mangrove/Scale Adaption/GEE/experiments/gee_florida_v1/best_model.pth" \
-    --output-dir /data/evaluations/brazil_cl_check
-```
-
-**Full audit across all trained regions:**
+**Evaluate:**
 ```bash
 python evaluate.py \
     --checkpoint "$HOME/ml-mangrove/Scale Adaption/GEE/experiments/gee_indonesia_cl_v1/best_model.pth" \
     --chips-dir /data/replay \
     --regions florida brazil indonesia \
-    --output-dir /data/evaluations/indonesia_full
+    --baseline "$HOME/ml-mangrove/Scale Adaption/GEE/experiments/gee_brazil_cl_v1/best_model.pth" \
+    --output-dir /data/evaluations/indonesia_cl \
+    --batch-size 8
 ```
 
-Key flags:
-- `--checkpoint` — model to evaluate
-- `--chips-dir` — use `/data/chips` for the current region, `/data/replay` for prior regions
-- `--regions` — one or more region names
-- `--baseline` — optional prior checkpoint for forgetting/BWT analysis
-- `--split` — `val` (default) or `train`
-- `--mode` — band mode matching the chips (default: `full`)
-- `--patch-size` — must match the value used during training (default: 512)
-- `--batch-size` — inference batch size (default: 4)
-- `--n-samples` — number of sample prediction images per region (default: 6)
-
-**Outputs per run** (saved to `--output-dir`):
-| File | Description |
-|---|---|
-| `metrics_<region>.json` | All numerical metrics per region |
-| `confusion_matrix_<region>.png` | Row-normalized confusion matrix |
-| `class_metrics_<region>.png` | IoU / Precision / Recall / F1 bar chart |
-| `samples_<region>.png` | RGB · Ground Truth · Prediction side-by-side |
-| `miou_summary.png` | mIoU + Pixel Accuracy across all regions |
-| `cl_comparison.png` | Per-class IoU grouped by region (multi-region runs) |
-| `forgetting.png` | ΔIoU vs baseline — red=forgetting, green=improvement |
-| `summary.json` | All metrics + Backward Transfer (BWT) in one file |
-
-**Copy results to GCS (from VM):**
+**Delete chips and upload results:**
 ```bash
-gsutil -m cp -r /data/evaluations/ gs://e4e-mangrove/evaluations/    # change if needed
+rm -rf /data/chips/indonesia
+
+gsutil -m cp -r /data/evaluations/indonesia_cl gs://e4e-mangrove/evaluations/    # change if needed
 ```
 
-**Download results to your local machine (run locally):**
+---
+
+#### Region 4 — Madagascar/Mozambique (replay: florida, brazil, indonesia)
+
+**Chip + train:**
+```bash
+python scripts/prepare_chips.py \
+    --bucket e4e-mangrove --region madagascar_mozambique \
+    --tiles-dir /data/tiles --chips-dir /data/chips
+
+python train.py \
+    --chips-dir /data/chips \
+    --region madagascar_mozambique \
+    --experiment gee_madagascar_cl_v1 \
+    --resume "$HOME/ml-mangrove/Scale Adaption/GEE/experiments/gee_indonesia_cl_v1/best_model.pth" \
+    --replay-regions florida brazil indonesia \
+    --replay-dir /data/replay \
+    --replay-fraction 0.1 \
+    --epochs 100 --batch-size 8 --num-workers 2 \
+    --bucket e4e-mangrove    # change if needed
+```
+
+**Build replay buffer:**
+```bash
+python scripts/create_replay_buffer.py \
+    --chips-dir /data/chips --region madagascar_mozambique \
+    --replay-dir /data/replay --fraction 0.05
+```
+
+**Evaluate:**
+```bash
+python evaluate.py \
+    --checkpoint "$HOME/ml-mangrove/Scale Adaption/GEE/experiments/gee_madagascar_cl_v1/best_model.pth" \
+    --chips-dir /data/replay \
+    --regions florida brazil indonesia madagascar_mozambique \
+    --baseline "$HOME/ml-mangrove/Scale Adaption/GEE/experiments/gee_indonesia_cl_v1/best_model.pth" \
+    --output-dir /data/evaluations/madagascar_cl \
+    --batch-size 8
+```
+
+**Delete chips and upload results:**
+```bash
+rm -rf /data/chips/madagascar_mozambique
+
+gsutil -m cp -r /data/evaluations/madagascar_cl gs://e4e-mangrove/evaluations/    # change if needed
+```
+
+---
+
+#### Region 5 — North Australia (replay: florida, brazil, indonesia, madagascar_mozambique)
+
+**Chip + train:**
+```bash
+python scripts/prepare_chips.py \
+    --bucket e4e-mangrove --region north_australia \
+    --tiles-dir /data/tiles --chips-dir /data/chips
+
+python train.py \
+    --chips-dir /data/chips \
+    --region north_australia \
+    --experiment gee_australia_cl_v1 \
+    --resume "$HOME/ml-mangrove/Scale Adaption/GEE/experiments/gee_madagascar_cl_v1/best_model.pth" \
+    --replay-regions florida brazil indonesia madagascar_mozambique \
+    --replay-dir /data/replay \
+    --replay-fraction 0.1 \
+    --epochs 100 --batch-size 8 --num-workers 2 \
+    --bucket e4e-mangrove    # change if needed
+```
+
+**Build replay buffer:**
+```bash
+python scripts/create_replay_buffer.py \
+    --chips-dir /data/chips --region north_australia \
+    --replay-dir /data/replay --fraction 0.05
+```
+
+**Evaluate:**
+```bash
+python evaluate.py \
+    --checkpoint "$HOME/ml-mangrove/Scale Adaption/GEE/experiments/gee_australia_cl_v1/best_model.pth" \
+    --chips-dir /data/replay \
+    --regions florida brazil indonesia madagascar_mozambique north_australia \
+    --baseline "$HOME/ml-mangrove/Scale Adaption/GEE/experiments/gee_madagascar_cl_v1/best_model.pth" \
+    --output-dir /data/evaluations/australia_cl \
+    --batch-size 8
+```
+
+**Delete chips and upload results:**
+```bash
+rm -rf /data/chips/north_australia
+
+gsutil -m cp -r /data/evaluations/australia_cl gs://e4e-mangrove/evaluations/    # change if needed
+```
+
+---
+
+#### Region 6 — East India/Bangladesh (replay: all prior regions)
+
+**Chip + train:**
+```bash
+python scripts/prepare_chips.py \
+    --bucket e4e-mangrove --region east_india_bangladesh \
+    --tiles-dir /data/tiles --chips-dir /data/chips
+
+python train.py \
+    --chips-dir /data/chips \
+    --region east_india_bangladesh \
+    --experiment gee_eastindia_cl_v1 \
+    --resume "$HOME/ml-mangrove/Scale Adaption/GEE/experiments/gee_australia_cl_v1/best_model.pth" \
+    --replay-regions florida brazil indonesia madagascar_mozambique north_australia \
+    --replay-dir /data/replay \
+    --replay-fraction 0.1 \
+    --epochs 100 --batch-size 8 --num-workers 2 \
+    --bucket e4e-mangrove    # change if needed
+```
+
+**Build replay buffer:**
+```bash
+python scripts/create_replay_buffer.py \
+    --chips-dir /data/chips --region east_india_bangladesh \
+    --replay-dir /data/replay --fraction 0.05
+```
+
+**Evaluate** (full audit across all 6 regions):
+```bash
+python evaluate.py \
+    --checkpoint "$HOME/ml-mangrove/Scale Adaption/GEE/experiments/gee_eastindia_cl_v1/best_model.pth" \
+    --chips-dir /data/replay \
+    --regions florida brazil indonesia madagascar_mozambique north_australia east_india_bangladesh \
+    --baseline "$HOME/ml-mangrove/Scale Adaption/GEE/experiments/gee_australia_cl_v1/best_model.pth" \
+    --output-dir /data/evaluations/final_audit \
+    --batch-size 8
+```
+
+**Delete chips and upload results:**
+```bash
+rm -rf /data/chips/east_india_bangladesh
+
+gsutil -m cp -r /data/evaluations/final_audit gs://e4e-mangrove/evaluations/    # change if needed
+```
+
+---
+
+#### Key flags (train.py)
+| Flag | Default | Description |
+|---|---|---|
+| `--chips-dir` | required | Root chip directory — has `<region>/train/` and `<region>/val/` |
+| `--region` | required | Region to train on |
+| `--experiment` | required | Experiment name — creates `experiments/<name>/` |
+| `--resume` | None | Checkpoint to warm-start or resume from |
+| `--replay-regions` | [] | Prior region names to replay (space-separated) |
+| `--replay-dir` | `/data/replay` | Root replay buffer directory |
+| `--replay-fraction` | 0.1 | Fraction of each batch sampled from replay |
+| `--epochs` | 100 | Number of training epochs |
+| `--batch-size` | 4 | Training batch size |
+| `--num-workers` | 4 | DataLoader workers — use 2 on GCP standard PD |
+| `--mode` | `full` | Band selection: `full` (68), `rgbn` (4), `rgb` (3), `embeddings` (64) |
+| `--lr` | 5e-5 | AdamW learning rate |
+| `--weight-decay` | 0.01 | AdamW weight decay |
+| `--seed` | 42 | Random seed |
+| `--bucket` | None | GCS bucket to upload best checkpoint after training |
+
+### Step 6 — Download results (local machine)
+
+After each region's results are uploaded to GCS, pull them down locally:
+
 ```bash
 # Download all evaluations
-gsutil -m cp -r gs://e4e-mangrove/evaluations/ "Scale Adaption/GEE/evaluations/"    # change if needed
+gsutil -m cp -r gs://e4e-mangrove/evaluations/ "Scale Adaption/GEE/evaluations/"    # change bucket if needed
 
 # Download best checkpoints
 gsutil -m cp -r gs://e4e-mangrove/checkpoints/ "Scale Adaption/GEE/experiments/"    # change if needed
@@ -354,6 +530,31 @@ gcloud auth login --no-launch-browser
 gcloud auth application-default login --no-launch-browser
 ```
 Then retry the upload.
+
+#### evaluate.py flags
+| Flag | Default | Description |
+|---|---|---|
+| `--checkpoint` | required | Model checkpoint to evaluate |
+| `--chips-dir` | required | Use `/data/replay` — val splits for all regions are here |
+| `--regions` | required | One or more region names (space-separated) |
+| `--baseline` | None | Prior checkpoint for ΔIoU / BWT forgetting analysis |
+| `--split` | `val` | Dataset split to evaluate on (`val` or `train`) |
+| `--mode` | `full` | Band mode — must match what was used during training |
+| `--patch-size` | 512 | Chip size — must match training |
+| `--batch-size` | 4 | Inference batch size |
+| `--n-samples` | 6 | Sample prediction images saved per region |
+
+#### Outputs (saved to `--output-dir`)
+| File | Description |
+|---|---|
+| `metrics_<region>.json` | All numerical metrics for that region |
+| `confusion_matrix_<region>.png` | Row-normalised confusion matrix |
+| `class_metrics_<region>.png` | IoU / Precision / Recall / F1 bar chart |
+| `samples_<region>.png` | RGB · Ground Truth · Prediction side-by-side |
+| `miou_summary.png` | mIoU + Pixel Accuracy bar chart across all evaluated regions |
+| `cl_comparison.png` | Per-class IoU grouped by region (multi-region runs) |
+| `forgetting.png` | ΔIoU vs baseline — red = forgetting, green = improvement |
+| `summary.json` | All metrics + Backward Transfer (BWT) in one file |
 
 ---
 
